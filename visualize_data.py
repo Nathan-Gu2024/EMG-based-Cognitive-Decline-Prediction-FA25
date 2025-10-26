@@ -1,4 +1,5 @@
 import mne
+import requests
 import glob
 import os
 import numpy as np
@@ -7,8 +8,20 @@ from mne.preprocessing import ICA
 from mne.io import read_raw_brainvision
 from scipy.signal import spectrogram
 
+
+
+
+
+# Running this should allow you to download the data files
+url = 'https://drive.google.com/uc?export=download&id=1yc1evq9s3N7tfYX_vJbchFgKuwbFJOhJ?'
+response = requests.get(url)
+with open('local_filename.ext', 'wb') as file:
+    file.write(response.content)
+
 # VHDR
 #.eeg and .vmrk files are being linked correctly (implcity via these outputs)
+
+#Change your directory accordingly otherwise this won't run
 root_dir = '/Users/nathangu/Desktop/Pytorch/NT/t8j8v4hnm4-1/Raw'
 
 ####ACTUAL FUNCTIONS
@@ -244,19 +257,19 @@ def plot_combined_timeseries(raw_eeg, raw_emg_filtered, events, event_id, durati
 
 
 #Running plots and preproc data
-vhdr_files = get_vhdr_files(root_dir)
-for file in vhdr_files:
-    raw_eeg, raw_emg, ica, raw_emg_filtered = prep(file)
-    # Load event info
-    raw = mne.io.read_raw_brainvision(file, preload=True)
-    events, event_id = mne.events_from_annotations(raw)
-    # print(events)
-    # print(event_id)
+# vhdr_files = get_vhdr_files(root_dir)
+# for file in vhdr_files:
+#     raw_eeg, raw_emg, ica, raw_emg_filtered = prep(file)
+#     # Load event info
+#     raw = mne.io.read_raw_brainvision(file, preload=True)
+#     events, event_id = mne.events_from_annotations(raw)
+#     # print(events)
+#     # print(event_id)
     
 
-    #Tasks 1, 2: 2.5 - 3 mins long
-    #Tasks 3, 4: 30 - 60 sec
-    plot_combined_timeseries(raw_eeg, raw_emg_filtered, events, event_id, duration=60, start=0)
+#     #Tasks 1, 2: 2.5 - 3 mins long
+#     #Tasks 3, 4: 30 - 60 sec
+#     plot_combined_timeseries(raw_eeg, raw_emg_filtered, events, event_id, duration=60, start=0)
 
     # raw = mne.io.read_raw_brainvision(file, preload=True)
     # print(raw.ch_names)

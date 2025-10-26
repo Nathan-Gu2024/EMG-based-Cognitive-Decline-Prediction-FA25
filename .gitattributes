@@ -1,0 +1,4 @@
+*.eeg filter=lfs diff=lfs merge=lfs -text
+*.edf filter=lfs diff=lfs merge=lfs -text
+*.bdf filter=lfs diff=lfs merge=lfs -text
+t8j8v4hnm4-1/Raw/**/* filter=lfs diff=lfs merge=lfs -text

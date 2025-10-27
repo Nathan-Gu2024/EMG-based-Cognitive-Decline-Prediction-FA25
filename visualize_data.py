@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from mne.preprocessing import ICA
 from mne.io import read_raw_brainvision
 from scipy.signal import spectrogram
+from mne import create_info, EpochsArray
 
 
 # Run this once, should allow you to download the data files
@@ -29,6 +30,8 @@ def get_vhdr_files(root_dir):
     print(f"Found {len(vhdr_files)} .vhdr files")
     return vhdr_files
 
+
+# Parse the accelerometer data
 def prep(file_path, run_ica=True):
     print(f"Loading: {file_path}")
     raw = read_raw_brainvision(file_path, preload=True)
@@ -150,9 +153,8 @@ def plot_spectrograms(original, filtered, sfreq, channel_names):
 
 
 
-#Figure out VMRK files still and event markers (likely need to get outside VMRK files like the paper)
-# EEG heatmap (channels × time) - normalized amplitude/z-score per channel so all channels are comparable
-# #Move the event markers to the bottom, and add in accelerometer signal data for gait context
+# Move the event markers to the bottom, and add in accelerometer signal data for gait context
+# Extend the graphs to include the full length of the task (make it interactable)
 def plot_combined_timeseries(raw_eeg, raw_emg_filtered, raw_acc, events, event_id, duration, start):
     eeg_data, emg_data, acc_data = None, None, None
     eeg_channels, emg_channels, acc_channels = [], [], []
@@ -304,12 +306,15 @@ def plot_combined_timeseries(raw_eeg, raw_emg_filtered, raw_acc, events, event_i
     # fig.subplots_adjust(left=0.07, right=0.92, top=0.95, bottom=0.07, hspace=0.35)
     plt.show()
 
+
+
 #Running plots and preproc data
 vhdr_files = get_vhdr_files(root_dir)
 for file in vhdr_files:
     raw_eeg, raw_emg, ica, raw_emg_filtered = prep(file)
     # Load event info
     raw = mne.io.read_raw_brainvision(file, preload=True)
+    # print(raw.info['ch_names'])
     events, event_id = mne.events_from_annotations(raw)
 #     # print(events)
 #     # print(event_id)
@@ -389,25 +394,3 @@ for file in vhdr_files:
 
 
 
-
-
-
-
-
-
-# Input: CAS9 sequence
-# Have a DP to track the current proteins and what sequences it corresponds to (String to String map)
-# Run a sliding window algorithm on the sequence (window size tbd)
-# Get the current substring of amino acids
-# edit distance from how far it is from the thing (DP) Smith–Waterman algorithm
-#  --> Find a protein (in humans?) containing that specific sequence (not sure what to use, maybe BLAST)
-#  --> if != null, put it into the DP
-#  --> else (not found) skip an amino acid and run the checks again
-# (Try to account for structure if possible, not sure what check I can do but 
-# maybe parse 2 at once (structure information and the sequnce along with it))
-# process the DP (not sure what to process yet, but maybe protein stability and other metrics of the proteins)
-# probably somehow score the DP overalls
-# return the best DP based off of highest score, 
-# which would have the proteins corresponding to their respective sequences
-
-#Scoring through alphafold / tmalign

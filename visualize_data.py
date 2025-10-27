@@ -9,17 +9,12 @@ from mne.io import read_raw_brainvision
 from scipy.signal import spectrogram
 
 
+# Run this once, should allow you to download the data files
 
-
-
-# Running this should allow you to download the data files
-url = 'https://drive.google.com/uc?export=download&id=1yc1evq9s3N7tfYX_vJbchFgKuwbFJOhJ?'
-response = requests.get(url)
-with open('local_filename.ext', 'wb') as file:
-    file.write(response.content)
-
-# VHDR
-#.eeg and .vmrk files are being linked correctly (implcity via these outputs)
+# url = 'https://drive.google.com/uc?export=download&id=1yc1evq9s3N7tfYX_vJbchFgKuwbFJOhJ?'
+# response = requests.get(url)
+# with open('local_filename.ext', 'wb') as file:
+#     file.write(response.content)
 
 #Change your directory accordingly otherwise this won't run
 root_dir = '/Users/nathangu/Desktop/Pytorch/NT/t8j8v4hnm4-1/Raw'
@@ -156,9 +151,11 @@ def plot_spectrograms(original, filtered, sfreq, channel_names):
 
 
 #Figure out VMRK files still and event markers (likely need to get outside VMRK files like the paper)
-def plot_combined_timeseries(raw_eeg, raw_emg_filtered, events, event_id, duration, start):
-    eeg_data, emg_data = None, None
-    eeg_channels, emg_channels = [], []
+# EEG heatmap (channels × time) - normalized amplitude/z-score per channel so all channels are comparable
+# #Move the event markers to the bottom, and add in accelerometer signal data for gait context
+def plot_combined_timeseries(raw_eeg, raw_emg_filtered, raw_acc, events, event_id, duration, start):
+    eeg_data, emg_data, acc_data = None, None, None
+    eeg_channels, emg_channels, acc_channels = [], [], []
     sfreq = None
 
     if raw_eeg is not None:
@@ -172,62 +169,123 @@ def plot_combined_timeseries(raw_eeg, raw_emg_filtered, events, event_id, durati
         if sfreq is None:
             sfreq = raw_emg_filtered.info['sfreq']
 
+
+    if raw_acc is not None:
+        acc_data = raw_acc.get_data()
+        acc_channels = raw_acc.ch_names
+        if sfreq is None:
+            sfreq = raw_emg_filtered.info['sfreq']
+    
+
     # Window
     n_samples = int(duration * sfreq)
     start_sample = int(start * sfreq)
     time_axis = np.arange(n_samples) / sfreq  # starts at 0
 
-    n_emg = len(emg_channels)
-    total_plots = 1 + n_emg
 
-    height_ratios = [1] + [1.25] * n_emg
-    fig, axes = plt.subplots(total_plots, 1, figsize=(15, 4 + 3 * n_emg), sharex=True,
-                             gridspec_kw={'height_ratios': height_ratios})
+    min_len = n_samples
+    if eeg_data is not None:
+        min_len = min(min_len, eeg_data.shape[1] - start_sample)
+    if emg_data is not None:
+        min_len = min(min_len, emg_data.shape[1] - start_sample)
+    if acc_data is not None:
+        min_len = min(min_len, acc_data.shape[1] - start_sample)
+    n_samples = max(0, min_len)
+    duration = n_samples / sfreq
+    time_axis = np.arange(n_samples) / sfreq
+
+
+    n_emg = len(emg_channels)
+    total_plots = 2 + n_emg #EEG heatmap, EMG, ACC
+
+    height_ratios = [1.2] + [1.25] * n_emg + [0.6]
+    fig, axes = plt.subplots(
+    total_plots, 1,
+    figsize=(15, 4 + 2.5 * total_plots),
+    sharex=True,
+    gridspec_kw={'height_ratios': height_ratios},
+    constrained_layout=True   # handles legends and colorbars automatically
+    )
 
     # EEG plot (top)
-    if eeg_data is not None:
-        eeg_segment = eeg_data[:, start_sample:start_sample + n_samples]
-        offset = 50
-        for i, ch in enumerate(eeg_channels[:1]):  #only first EEG channel for clarity
-            axes[0].plot(time_axis, eeg_segment[i] + i * offset, label=ch)
-        axes[0].set_title("EEG")
-        axes[0].set_ylabel("Amplitude (μV)")
-        axes[0].legend(loc='upper left', bbox_to_anchor=(1.02, 1.0), fontsize=8, framealpha=0.6)
-        axes[0].grid(alpha=0.3)
+    # if eeg_data is not None:
+    #     eeg_segment = eeg_data[:, start_sample:start_sample + n_samples]
+    #     offset = 50
+    #     for i, ch in enumerate(eeg_channels[:2]):  #only first EEG channel for clarity
+    #         axes[0].plot(time_axis, eeg_segment[i] + i * offset, label=ch)
+    #     axes[0].set_title("EEG")
+    #     axes[0].set_ylabel("Amplitude (μV)")
+    #     axes[0].legend(loc='upper left', bbox_to_anchor=(1.02, 1.0), fontsize=8, framealpha=0.6)
+    #     axes[0].grid(alpha=0.3)
+
+
+    #EEG heatmap 
+    eeg_segment = eeg_data[:, start_sample:start_sample + n_samples]
+    eeg_z = (eeg_segment - np.mean(eeg_segment, axis=1, keepdims=True)) / np.std(eeg_segment, axis=1, keepdims=True)
+    im = axes[0].imshow(eeg_z, aspect='auto', origin='lower',
+                            extent=[0, duration, 0, len(eeg_channels)],
+                            cmap='RdBu_r', vmin=-3, vmax=3)
+    axes[0].set_title("EEG (Z-scored Amplitude Heatmap)")
+    axes[0].set_ylabel("Channels")
+    axes[0].set_yticks(np.arange(len(eeg_channels)) + 0.5)
+    axes[0].set_yticklabels(eeg_channels, fontsize=7)
+    fig.colorbar(im, ax=axes[0], label="Z-score", shrink=0.8)
+
+
 
     # EMG spectrograms
     for idx, ch in enumerate(emg_channels):
         ax = axes[idx + 1]
         emg_segment = emg_data[idx, start_sample:start_sample + n_samples]
-        f_centers, t_centers, Sxx = spectrogram(emg_segment, fs=sfreq, nperseg=1024, noverlap=512, mode='psd')
+
+        # Pad EMG if shorter than expected
+        if len(emg_segment) < n_samples:
+            pad_len = n_samples - len(emg_segment)
+            emg_segment = np.pad(emg_segment, (0, pad_len), mode='constant')
+
+        f_centers, t_centers, Sxx = spectrogram(
+            emg_segment, fs=sfreq, nperseg=1024, noverlap=512, mode='psd'
+        )
         Sxx_db = 10 * np.log10(Sxx + 1e-12)
 
-        # alignment
-        f_edges = np.concatenate([
-            [f_centers[0] - (f_centers[1] - f_centers[0]) / 2],
-            (f_centers[:-1] + f_centers[1:]) / 2,
-            [f_centers[-1] + (f_centers[-1] - f_centers[-2]) / 2]
-        ])
+        # Generate evenly spaced time edges matching full window duration
         t_edges = np.linspace(0.0, duration, Sxx_db.shape[1] + 1)
+        f_edges = np.linspace(f_centers[0], f_centers[-1], Sxx_db.shape[0] + 1)
 
-        # Plot spectrogram
-        try:
-            im = ax.pcolormesh(t_edges, f_edges, Sxx_db, shading='gouraud')
-        except Exception:
-            t_centers = np.linspace(0.0, duration, Sxx_db.shape[1])
-            im = ax.pcolormesh(t_centers, f_centers, Sxx_db, shading='auto')
-
+        im = ax.pcolormesh(
+            t_edges, f_edges, Sxx_db, shading='auto', cmap='viridis', rasterized=True
+        )
         ax.set_title(f"{ch} - Filtered (10–500 Hz)")
-        ax.set_ylabel("Frequency [Hz]")
+        ax.set_ylabel("Freq [Hz]")
         ax.set_ylim(0, 250)
         ax.set_xlim(0, duration)
-        if idx == n_emg - 1:
-            ax.set_xlabel("Time [s]")
 
-        #colorbar for each spectrogram
-        cax = fig.add_axes([0.88, 0.12 + (0.36 * (n_emg - idx - 1) / n_emg), 0.02, 0.36 / n_emg])
-        cb = fig.colorbar(im, cax=cax)
-        cb.set_label("Power (dB)")
+        # Add colorbar to the final EMG only
+        if idx == n_emg - 1:
+            fig.colorbar(im, ax=ax, label="Power (dB)", shrink=0.8)
+            if raw_acc is None:
+                ax.set_xlabel("Time [s]")
+        
+    if raw_acc is not None:
+        acc_ax = axes[-1]
+        acc_segment = acc_data[:, start_sample:start_sample + n_samples]
+
+        # Pad accelerometer if short
+        for i in range(acc_segment.shape[0]):
+            if acc_segment.shape[1] < n_samples:
+                pad_len = n_samples - acc_segment.shape[1]
+                acc_segment[i] = np.pad(acc_segment[i], (0, pad_len), mode='constant')
+
+        for i, ch in enumerate(acc_channels):
+            acc_ax.plot(time_axis, acc_segment[i] + i * 0.5, label=ch)
+
+        acc_ax.set_title("Accelerometer Signals (Gait Context)")
+        acc_ax.set_ylabel("Amplitude (a.u.)")
+        acc_ax.set_xlabel("Time [s]")
+        acc_ax.legend(loc='upper left', bbox_to_anchor=(1.02, 1.0), fontsize=7, framealpha=0.5)
+        acc_ax.grid(alpha=0.3)
+        
+
 
     # Event markers
     if events is not None and len(events) > 0:
@@ -236,48 +294,33 @@ def plot_combined_timeseries(raw_eeg, raw_emg_filtered, events, event_id, durati
             event_time_rel = event_time_abs - start
             if 0 <= event_time_rel <= duration:
                 label = [k for k, v in event_id.items() if v == e[2]]
-                for ax in axes:
-                    ax.axvline(event_time_rel, color='red', linestyle='--', alpha=0.8)
+                axes[-1].axvline(event_time_rel, color='red', linestyle='--', alpha=0.8)
                 if label:
-                    axes[0].text(event_time_rel, axes[0].get_ylim()[1] * 0.92,
-                                 label[0], rotation=90, color='red', va='top', fontsize=8)
+                    axes[-1].text(event_time_rel, axes[-1].get_ylim()[1] * 0.9,
+                                  label[0], rotation=90, color='red', va='top', fontsize=7)
 
-    fig.subplots_adjust(left=0.06, right=0.86, top=0.95, bottom=0.07, hspace=0.32)
+    # layout adjustment
+    axes[0].set_xlim(0, duration)
+    # fig.subplots_adjust(left=0.07, right=0.92, top=0.95, bottom=0.07, hspace=0.35)
     plt.show()
 
-    # EMG plot
-    # if emg_data is not None:
-    #     emg_segment = emg_data[:, start : start + n_samples]
-    #     for i, ch in enumerate(emg_channels):
-    #         axes[1].plot(time_axis, emg_segment[i] + i * 200, label=ch) 
-    #     axes[1].set_title("EMG (10–500 Hz)")
-    #     axes[1].set_ylabel("Amplitude (μV)")
-    #     axes[1].legend(loc='upper right', fontsize=8)
-    #     axes[1].grid(alpha=0.3)
-
-
 #Running plots and preproc data
-# vhdr_files = get_vhdr_files(root_dir)
-# for file in vhdr_files:
-#     raw_eeg, raw_emg, ica, raw_emg_filtered = prep(file)
-#     # Load event info
-#     raw = mne.io.read_raw_brainvision(file, preload=True)
-#     events, event_id = mne.events_from_annotations(raw)
+vhdr_files = get_vhdr_files(root_dir)
+for file in vhdr_files:
+    raw_eeg, raw_emg, ica, raw_emg_filtered = prep(file)
+    # Load event info
+    raw = mne.io.read_raw_brainvision(file, preload=True)
+    events, event_id = mne.events_from_annotations(raw)
 #     # print(events)
 #     # print(event_id)
     
 
 #     #Tasks 1, 2: 2.5 - 3 mins long
 #     #Tasks 3, 4: 30 - 60 sec
-#     plot_combined_timeseries(raw_eeg, raw_emg_filtered, events, event_id, duration=60, start=0)
+    plot_combined_timeseries(raw_eeg, raw_emg_filtered, None, events, event_id, duration=30, start=0)
 
     # raw = mne.io.read_raw_brainvision(file, preload=True)
     # print(raw.ch_names)
-    #event markers
-    # events, event_id = mne.events_from_annotations(raw)
-    # print(event_id)
-    # print(events[:10])
-    # print(events)
 
     #EMG portion
     # if raw_emg is not None:
@@ -287,7 +330,7 @@ def plot_combined_timeseries(raw_eeg, raw_emg_filtered, events, event_id, durati
     #     channel_names = raw_emg.ch_names
     #     check_quality(data_original, sfreq, channel_names)
     #     plot_emg(data_original, data_filtered, channel_names, sfreq)
-    #     plot_spectrograms(data_original, data_filtered, sfreq, channel_names)
+        # plot_spectrograms(data_original, data_filtered, sfreq, channel_names)
     #     events, event_id = mne.events_from_annotations(raw_emg)
     #     print(event_id)
     #     print(events[:10])
@@ -308,7 +351,9 @@ def plot_combined_timeseries(raw_eeg, raw_emg_filtered, events, event_id, durati
     #     raw_eeg.plot(duration=5, n_channels=30)
     #     plt.show()
 
-    # epochs = mne.Epochs(raw_emg, events, event_id, tmin=-0.2, tmax=1.0, preload=True)
+    # epochs = mne.Epochs(raw_eeg, events, event_id, tmin=-0.2, tmax=1.0, preload=True)
+    # times = np.arange(0, 1, 0.1)
+    # epochs.average().plot_topomap(times, ch_type='eeg')
 
     # data_original = raw_emg.get_data()
     # data_filtered = raw_emg_filtered.get_data()
@@ -317,11 +362,6 @@ def plot_combined_timeseries(raw_eeg, raw_emg_filtered, events, event_id, durati
 
     # print(f"\nFinal sampling rate: {sfreq} Hz")
     # print(f"Data shape: {data_filtered.shape}")
-
-    # check_quality(data_original, sfreq, channel_names)
-    # plot_emg(data_original, data_filtered, channel_names, sfreq)
-    # plot_spectrograms(data_original, data_filtered, sfreq, channel_names)
-
 
 #debug
 # raw = mne.io.read_raw_brainvision(file, preload=True)

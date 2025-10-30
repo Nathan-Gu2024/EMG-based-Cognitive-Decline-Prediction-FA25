@@ -2,12 +2,16 @@ import mne
 import requests
 import glob
 import os
+import datetime
 import numpy as np
 import matplotlib.pyplot as plt
+import pandas as pd
 from mne.preprocessing import ICA
 from mne.io import read_raw_brainvision
 from scipy.signal import spectrogram
 from mne import create_info, EpochsArray
+from scipy.interpolate import interp1d
+from datetime import timedelta, datetime
 
 
 # Run this once, should allow you to download the data files
@@ -31,7 +35,54 @@ def get_vhdr_files(root_dir):
     return vhdr_files
 
 
-# Parse the accelerometer data
+#LShank, RShank, Waist, Arm
+# timestamp, acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z, NC/SC (not important)
+#Sampled at 500Hz => 2ms / sample
+#Missing 1-2 CSVs
+def prep_acc_data(path_acc, sensor_loc, gait_start): 
+    file_path = os.path.join(path_acc, f"{sensor_loc}.csv")
+
+    if not os.path.exists(file_path):
+        print(f"Missing file for {sensor_loc}: {file_path}")
+        return None
+    
+    # Load CSV safely
+    df = pd.read_csv(
+        file_path,
+        header=None,
+        names=["timestamp", "acc_x", "acc_y", "acc_z", "gyro_x", "gyro_y", "gyro_z", "extra"],
+        index_col=False,
+        engine="python",
+    )
+
+    # Clean timestamp column
+    df["timestamp"] = df["timestamp"].astype(str).str.strip().str.strip(",")
+    df["timestamp"] = pd.to_datetime(df["timestamp"], format="%Y_%m_%d_%H_%M_%S_%f", errors="coerce")
+    df = df.dropna(subset=["timestamp"])
+
+    # Convert timestamps to seconds since first record
+    t0 = df["timestamp"].iloc[0]
+    df["t_sec"] = (df["timestamp"] - t0).dt.total_seconds()
+
+    # Handle duplicates by averaging over duplicates
+    df = df.groupby("t_sec", as_index=False).mean(numeric_only=True)
+
+    # Create new 500 Hz timeline (0.002 s spacing)
+    t_interp = np.arange(df["t_sec"].iloc[0], df["t_sec"].iloc[-1], 1/500)
+
+    # Interpolate each column
+    interp_df = pd.DataFrame({"t_sec": t_interp})
+    for col in ["acc_x", "acc_y", "acc_z", "gyro_x", "gyro_y", "gyro_z"]:
+        f = interp1d(df["t_sec"], df[col], kind="cubic", fill_value="extrapolate")
+        interp_df[col] = f(t_interp)
+
+    # Create absolute timestamps relative to gait_start
+    interp_df["timestamp"] = [
+        (gait_start + timedelta(seconds=t)).strftime("%H:%M:%S.%f")[:-3]
+        for t in interp_df["t_sec"]
+    ]
+    return interp_df
+
 def prep(file_path, run_ica=True):
     print(f"Loading: {file_path}")
     raw = read_raw_brainvision(file_path, preload=True)
@@ -309,20 +360,102 @@ def plot_combined_timeseries(raw_eeg, raw_emg_filtered, raw_acc, events, event_i
 
 
 #Running plots and preproc data
-vhdr_files = get_vhdr_files(root_dir)
-for file in vhdr_files:
-    raw_eeg, raw_emg, ica, raw_emg_filtered = prep(file)
-    # Load event info
-    raw = mne.io.read_raw_brainvision(file, preload=True)
-    # print(raw.info['ch_names'])
-    events, event_id = mne.events_from_annotations(raw)
+
+ROOT = "/Users/nathangu/Desktop/Pytorch/NT/t8j8v4hnm4-1/Raw"  
+SENSORS = ["LShank", "RShank", "Waist", "Arm"]
+GAIT_START_STR = "2019-12-18 09:28:46.727"  # replace per-subject for different gait starts
+GAIT_START = datetime.strptime(GAIT_START_STR, "%Y-%m-%d %H:%M:%S.%f")
+
+subject_dirs = sorted([
+    os.path.join(ROOT, d) for d in os.listdir(ROOT)
+    if os.path.isdir(os.path.join(ROOT, d))
+])
+
+print(f"Found {len(subject_dirs)} subject folders under {ROOT}:\n", subject_dirs)
+
+# Main loop
+all_subjects_data = {}   # store results keyed by subject id (folder name)
+for subj_path in subject_dirs:
+    subj_id = os.path.basename(subj_path)
+    print(f"\n--- SUBJECT {subj_id} ---")
+    
+    # 1) find vhdr file for this subject
+    vhdr_pattern = os.path.join(subj_path, "*.vhdr")
+    vhdr_files = glob.glob(vhdr_pattern)
+    if len(vhdr_files) == 0:
+        print(f"  No .vhdr found in {subj_path}, skipping EEG/EMG preprocessing for this subject.")
+        raw_eeg = raw_emg = ica = raw_emg_filtered = None
+        events = event_id = None
+    else:
+        vhdr_file = vhdr_files[0]  
+        print(f"  Found VHDR: {os.path.basename(vhdr_file)}")
+        raw_eeg, raw_emg, ica, raw_emg_filtered = prep(vhdr_file, run_ica=True)
+        raw_for_events = read_raw_brainvision(vhdr_file, preload=True)
+        events, event_id = mne.events_from_annotations(raw_for_events)
+        print(f"  Loaded EEG/EMG. EMG channels: {raw_emg.ch_names if raw_emg is not None else 'None'}")
+    
+    subj_acc_data = {}
+    for sensor in SENSORS:
+        csv_path = os.path.join(subj_path, f"{sensor}.csv")
+        if os.path.exists(csv_path):
+            print(f"  Loading ACC CSV: {sensor}.csv")
+            df_acc = prep_acc_data(subj_path, sensor, GAIT_START) 
+            if df_acc is None:
+                print(f"    prep_acc_data returned None for {sensor}")
+            else:
+                print(f"    {sensor}: {len(df_acc)} samples, t_sec range {df_acc['t_sec'].iloc[0]:.3f} - {df_acc['t_sec'].iloc[-1]:.3f}s")
+                subj_acc_data[sensor] = df_acc
+        else:
+            print(f"  Missing ACC CSV: {sensor}.csv (skipping)")
+
+    # alignment using available sensors (Waist)
+    if len(subj_acc_data) == 0:
+        print("  No ACC sensors loaded for this subject.")
+        aligned_data = None
+    else:
+        # choose reference sensor: Waist if present, otherwise first key
+        ref = "Waist" if "Waist" in subj_acc_data else next(iter(subj_acc_data))
+        ref_df = subj_acc_data[ref]
+        aligned_times = ref_df["t_sec"].values
+        aligned_data = {"t_sec": aligned_times}
+        for sensor_name, df in subj_acc_data.items():
+            for axis in ["acc_x", "acc_y", "acc_z"]:
+                aligned_data[f"{sensor_name}_{axis}"] = np.interp(aligned_times, df["t_sec"].values, df[axis].values)
+        aligned_data = pd.DataFrame(aligned_data)
+        print(f"  Aligned ACC shape: {aligned_data.shape}")
+
+    #store everything for downstream analysis/plotting
+    all_subjects_data[subj_id] = {
+        "raw_eeg": raw_eeg,
+        "raw_emg": raw_emg,
+        "raw_emg_filtered": raw_emg_filtered,
+        "events": events,
+        "event_id": event_id,
+        "acc_dfs": subj_acc_data,
+        "acc_aligned": aligned_data
+    }
+
+# quick summary
+print(f"\nProcessed {len(all_subjects_data)} subjects. Example keys for subject 001:")
+example = next(iter(all_subjects_data.keys()))
+print(example, list(all_subjects_data[example].keys()))
+
+# vhdr_files = get_vhdr_files(root_dir)
+# for file in vhdr_files:
+#     raw_eeg, raw_emg, ica, raw_emg_filtered = prep(file)
+#     # Load event info
+#     raw = mne.io.read_raw_brainvision(file, preload=True)
+#     # print(raw.info['ch_names'])
+#     events, event_id = mne.events_from_annotations(raw)
+
+
 #     # print(events)
 #     # print(event_id)
     
 
 #     #Tasks 1, 2: 2.5 - 3 mins long
 #     #Tasks 3, 4: 30 - 60 sec
-    plot_combined_timeseries(raw_eeg, raw_emg_filtered, None, events, event_id, duration=30, start=0)
+    # plot_combi dned_timeseries(raw_eeg, raw_emg_filtered, None, events, event_id, duration=30, start=0)
 
     # raw = mne.io.read_raw_brainvision(file, preload=True)
     # print(raw.ch_names)

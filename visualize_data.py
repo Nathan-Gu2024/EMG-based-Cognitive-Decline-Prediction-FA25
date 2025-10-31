@@ -28,17 +28,32 @@ root_dir = '/Users/nathangu/Desktop/Pytorch/NT/t8j8v4hnm4-1/Raw'
 # EMG: bandpass 10–500 Hz
 # EEG: bandpass 0.5–45 Hz
 # (They resample to 500 Hz or 1000 Hz depending on the modality)
-
 def get_vhdr_files(root_dir):
     vhdr_files = glob.glob(os.path.join(root_dir, '**', '*.vhdr'), recursive=True)
     print(f"Found {len(vhdr_files)} .vhdr files")
     return vhdr_files
 
 
+#1. Convert the gyro to anguler velo
+# subtract the gyroscope's bias (average the readings over a period when the sensor is stationary,
+#  then subtracting this average from all subsequent readings)
+#2. Take gyro readings at discrete time intervals
+# Multiply the angular velocity by the time interval to find the change in angle for that interval.
+# Sum these changes over time to get a cumulative estimate of the sensor's orientation (prone to drift)
+# 3. Use  accelerometer's measurements to determine the orientation relative to gravity
+# Combine  with gyroscope data to create more accurate, stable orientation estimate
+# 4. Appply kalman / complementary filter to combine the data
+def calc_imu_data():
+    return None
+
+
 #LShank, RShank, Waist, Arm
 # timestamp, acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z, NC/SC (not important)
 #Sampled at 500Hz => 2ms / sample
 #Missing 1-2 CSVs
+#Likely skips over the 8th subject due to the actual data being 2 folders rather than 1 folder deep
+#Need to align sensors (LShank, RShank, Waist, Arm) 
+# ^^ (maybe make into a singular mne object so it is easier to work with)
 def prep_acc_data(path_acc, sensor_loc, gait_start): 
     file_path = os.path.join(path_acc, f"{sensor_loc}.csv")
 
@@ -400,6 +415,9 @@ for subj_path in subject_dirs:
         if os.path.exists(csv_path):
             print(f"  Loading ACC CSV: {sensor}.csv")
             df_acc = prep_acc_data(subj_path, sensor, GAIT_START) 
+            print(df_acc.head())
+            print(df_acc.shape)
+
             if df_acc is None:
                 print(f"    prep_acc_data returned None for {sensor}")
             else:
@@ -440,6 +458,9 @@ print(f"\nProcessed {len(all_subjects_data)} subjects. Example keys for subject 
 example = next(iter(all_subjects_data.keys()))
 print(example, list(all_subjects_data[example].keys()))
 
+
+
+#### OLD LOOP
 # vhdr_files = get_vhdr_files(root_dir)
 # for file in vhdr_files:
 #     raw_eeg, raw_emg, ica, raw_emg_filtered = prep(file)

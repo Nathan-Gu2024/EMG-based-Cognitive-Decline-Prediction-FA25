@@ -42,10 +42,13 @@ def get_vhdr_files(root_dir):
 # Sum these changes over time to get a cumulative estimate of the sensor's orientation (prone to drift)
 # 3. Use  accelerometer's measurements to determine the orientation relative to gravity
 # Combine  with gyroscope data to create more accurate, stable orientation estimate
-# 4. Appply kalman / complementary filter to combine the data
+# 4. Appply kalman / complementary filter to combine the data (kalman is in another class)
 def calc_imu_data():
     return None
 
+
+def merge_sensors(subject_folder, gait_start):
+    return None
 
 #LShank, RShank, Waist, Arm
 # timestamp, acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z, NC/SC (not important)

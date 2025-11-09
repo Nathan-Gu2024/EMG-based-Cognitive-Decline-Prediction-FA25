@@ -297,35 +297,23 @@ def plot_combined_timeseries(raw_eeg, raw_emg_filtered, raw_acc, events, event_i
     # fig.subplots_adjust(left=0.07, right=0.92, top=0.95, bottom=0.07, hspace=0.35)
     plt.show()
 
-#1. Convert the gyro to anguler velo
-# subtract the gyroscope's bias (average the readings over a period when the sensor is stationary,
-#  then subtracting this average from all subsequent readings)
-#2. Take gyro readings at discrete time intervals
-# Multiply the angular velocity by the time interval to find the change in angle for that interval.
-# Sum these changes over time to get a cumulative estimate of the sensor's orientation (prone to drift)
-# 3. Use  accelerometer's measurements to determine the orientation relative to gravity
-# Combine  with gyroscope data to create more accurate, stable orientation estimate
-# 4. Apply kalman / complementary filter to combine the data (kalman is in another class)
-def calc_imu_data():
-    return None
-
 # Merge preprocessed ACC sensor DataFrames (from prep_acc_data) into one aligned DataFrame
 # Retrun pd.DataFrame: merged accelerometer + gyro data aligned to the reference sensor
 def merge_all_sensors(subject_acc_data, gait_start):
     if not subject_acc_data:
         raise ValueError("No accelerometer data provided to merge_all_sensors()")
 
-    # pick reference for time alignment
+    #pick reference for time alignment
     ref_sensor = "Waist" if "Waist" in subject_acc_data else list(subject_acc_data.keys())[0]
     ref_time = subject_acc_data[ref_sensor]["t_sec"].values
     aligned = pd.DataFrame({"t_sec": ref_time})
 
-    # merge interpolated columns for all sensors
+    #merge interpolated columns for all sensors
     for sensor, df in subject_acc_data.items():
         for col in ["acc_x", "acc_y", "acc_z", "gyro_x", "gyro_y", "gyro_z"]:
             aligned[f"{sensor}_{col}"] = np.interp(ref_time, df["t_sec"], df[col])
 
-    # reconstruct absolute timestamps
+    #reconstruct absolute timestamps
     aligned["timestamp"] = [
         (gait_start + pd.to_timedelta(t, unit="s")).strftime("%H:%M:%S.%f")[:-3]
         for t in aligned["t_sec"]
@@ -347,7 +335,6 @@ def prep_acc_data(path_acc, sensor_loc, gait_start):
         print(f"Missing file for {sensor_loc}: {file_path}")
         return None
     
-    # Load CSV safely
     df = pd.read_csv(
         file_path,
         header=None,
@@ -356,35 +343,36 @@ def prep_acc_data(path_acc, sensor_loc, gait_start):
         engine="python",
     )
 
-    # Clean timestamp column
+    #Clean timestamps column
     df["timestamp"] = df["timestamp"].astype(str).str.strip().str.strip(",")
     df["timestamp"] = pd.to_datetime(df["timestamp"], format="%Y_%m_%d_%H_%M_%S_%f", errors="coerce")
     df = df.dropna(subset=["timestamp"])
 
-    # Convert timestamps to seconds since first record
+    #Convert timestamps to seconds
     t0 = df["timestamp"].iloc[0]
     df["t_sec"] = (df["timestamp"] - t0).dt.total_seconds()
 
-    # Handle duplicates by averaging over duplicates
+    #Handle duplicates by averaging over duplicates since the interp can't deal with dupes
     df = df.groupby("t_sec", as_index=False).mean(numeric_only=True)
 
-    # Create new 500 Hz timeline (0.002 s spacing)
+    #Create 500 Hz timeline (0.002s spacing)
     t_interp = np.arange(df["t_sec"].iloc[0], df["t_sec"].iloc[-1], 1/500)
 
-    # Interpolate each column
+    #Interpolate each column
     interp_df = pd.DataFrame({"t_sec": t_interp})
     for col in ["acc_x", "acc_y", "acc_z", "gyro_x", "gyro_y", "gyro_z"]:
         f = interp1d(df["t_sec"], df[col], kind="cubic", fill_value="extrapolate")
         interp_df[col] = f(t_interp)
 
-    # Create absolute timestamps relative to gait_start
+    #Create absolute timestamps relative to gait_start
     interp_df["timestamp"] = [
         (gait_start + timedelta(seconds=t)).strftime("%H:%M:%S.%f")[:-3]
         for t in interp_df["t_sec"]
     ]
     return interp_df
 
-
+#Creates the matrices for the kalman
+#Generated with GPT because I have no clue what id put as input
 def create_kalman_filter(dt=0.002):
     # State: [angle, bias]
     F = np.array([[1, -dt],
@@ -404,6 +392,16 @@ def create_kalman_filter(dt=0.002):
 
     return KalmanFilter(F, B, H, Q, R, x0, P0)
 
+
+#1. Convert the gyro to anguler velo
+# subtract the gyroscope's bias (average the readings over a period when the sensor is stationary,
+#  then subtracting this average from all subsequent readings)
+#2. Take gyro readings at discrete time intervals
+# Multiply the angular velocity by the time interval to find the change in angle for that interval.
+# Sum these changes over time to get a cumulative estimate of the sensor's orientation (prone to drift)
+# 3. Use  accelerometer's measurements to determine the orientation relative to gravity
+# Combine  with gyroscope data to create more accurate, stable orientation estimate
+# 4. Apply kalman / complementary filter to combine the data (kalman is in another class)
 def fuse_imu_data(df):
     dt = 0.002  # 500 Hz
     kf_x = create_kalman_filter(dt)
@@ -431,7 +429,7 @@ def fuse_imu_data(df):
         kf_y.update(np.array([[roll_meas]]))
         fused_roll.append(kf_y.estimate0[0,0])
 
-        # Z-axis (yaw — if magnetometer existed, we’d use it)
+        # Z-axis (yaw)
         kf_z.predict(u=np.array([[gyro[2,0]]]))
         fused_yaw.append(kf_z.estimate0[0,0])
 
@@ -557,14 +555,14 @@ for subj_path in subject_dirs:
     break
 
 #Single subject data
-merged_df = all_subjects_data["001"]["acc_aligned"]
-imu_df = all_subjects_data["001"]["imu_fused"]
-print("\nSample merged accelerometer data:")
-print(merged_df.head())
+# merged_df = all_subjects_data["001"]["acc_aligned"]
+# imu_df = all_subjects_data["001"]["imu_fused"]
+# print("\nSample merged accelerometer data:")
+# print(merged_df.head())
 
-print("\nSample fused IMU data for Waist:")
-if "Waist" in imu_df:
-    print(imu_df["Waist"].head())
+# print("\nSample fused IMU data for Waist:")
+# if "Waist" in imu_df:
+#     print(imu_df["Waist"].head())
 
 # # quick summary
 # print(f"\nProcessed {len(all_subjects_data)} subjects. Example keys for subject 001:")

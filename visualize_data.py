@@ -12,17 +12,7 @@ from scipy.signal import spectrogram
 from mne import create_info, EpochsArray
 from scipy.interpolate import interp1d
 from datetime import timedelta, datetime
-
-
-# Run this once, should allow you to download the data files
-
-# url = 'https://drive.google.com/uc?export=download&id=1yc1evq9s3N7tfYX_vJbchFgKuwbFJOhJ?'
-# response = requests.get(url)
-# with open('local_filename.ext', 'wb') as file:
-#     file.write(response.content)
-
-#Change your directory accordingly otherwise this won't run
-root_dir = '/Users/nathangu/Desktop/Pytorch/NT/t8j8v4hnm4-1/Raw'
+from kalman_filter import KalmanFilter
 
 ####ACTUAL FUNCTIONS
 # EMG: bandpass 10–500 Hz
@@ -33,73 +23,6 @@ def get_vhdr_files(root_dir):
     print(f"Found {len(vhdr_files)} .vhdr files")
     return vhdr_files
 
-
-#1. Convert the gyro to anguler velo
-# subtract the gyroscope's bias (average the readings over a period when the sensor is stationary,
-#  then subtracting this average from all subsequent readings)
-#2. Take gyro readings at discrete time intervals
-# Multiply the angular velocity by the time interval to find the change in angle for that interval.
-# Sum these changes over time to get a cumulative estimate of the sensor's orientation (prone to drift)
-# 3. Use  accelerometer's measurements to determine the orientation relative to gravity
-# Combine  with gyroscope data to create more accurate, stable orientation estimate
-# 4. Appply kalman / complementary filter to combine the data (kalman is in another class)
-def calc_imu_data():
-    return None
-
-
-def merge_sensors(subject_folder, gait_start):
-    return None
-
-#LShank, RShank, Waist, Arm
-# timestamp, acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z, NC/SC (not important)
-#Sampled at 500Hz => 2ms / sample
-#Missing 1-2 CSVs
-#Likely skips over the 8th subject due to the actual data being 2 folders rather than 1 folder deep
-#Need to align sensors (LShank, RShank, Waist, Arm) 
-# ^^ (maybe make into a singular mne object so it is easier to work with)
-def prep_acc_data(path_acc, sensor_loc, gait_start): 
-    file_path = os.path.join(path_acc, f"{sensor_loc}.csv")
-
-    if not os.path.exists(file_path):
-        print(f"Missing file for {sensor_loc}: {file_path}")
-        return None
-    
-    # Load CSV safely
-    df = pd.read_csv(
-        file_path,
-        header=None,
-        names=["timestamp", "acc_x", "acc_y", "acc_z", "gyro_x", "gyro_y", "gyro_z", "extra"],
-        index_col=False,
-        engine="python",
-    )
-
-    # Clean timestamp column
-    df["timestamp"] = df["timestamp"].astype(str).str.strip().str.strip(",")
-    df["timestamp"] = pd.to_datetime(df["timestamp"], format="%Y_%m_%d_%H_%M_%S_%f", errors="coerce")
-    df = df.dropna(subset=["timestamp"])
-
-    # Convert timestamps to seconds since first record
-    t0 = df["timestamp"].iloc[0]
-    df["t_sec"] = (df["timestamp"] - t0).dt.total_seconds()
-
-    # Handle duplicates by averaging over duplicates
-    df = df.groupby("t_sec", as_index=False).mean(numeric_only=True)
-
-    # Create new 500 Hz timeline (0.002 s spacing)
-    t_interp = np.arange(df["t_sec"].iloc[0], df["t_sec"].iloc[-1], 1/500)
-
-    # Interpolate each column
-    interp_df = pd.DataFrame({"t_sec": t_interp})
-    for col in ["acc_x", "acc_y", "acc_z", "gyro_x", "gyro_y", "gyro_z"]:
-        f = interp1d(df["t_sec"], df[col], kind="cubic", fill_value="extrapolate")
-        interp_df[col] = f(t_interp)
-
-    # Create absolute timestamps relative to gait_start
-    interp_df["timestamp"] = [
-        (gait_start + timedelta(seconds=t)).strftime("%H:%M:%S.%f")[:-3]
-        for t in interp_df["t_sec"]
-    ]
-    return interp_df
 
 def prep(file_path, run_ica=True):
     print(f"Loading: {file_path}")
@@ -219,7 +142,6 @@ def plot_spectrograms(original, filtered, sfreq, channel_names):
 
         plt.tight_layout()
         plt.show()
-
 
 
 # Move the event markers to the bottom, and add in accelerometer signal data for gait context
@@ -375,10 +297,153 @@ def plot_combined_timeseries(raw_eeg, raw_emg_filtered, raw_acc, events, event_i
     # fig.subplots_adjust(left=0.07, right=0.92, top=0.95, bottom=0.07, hspace=0.35)
     plt.show()
 
+#1. Convert the gyro to anguler velo
+# subtract the gyroscope's bias (average the readings over a period when the sensor is stationary,
+#  then subtracting this average from all subsequent readings)
+#2. Take gyro readings at discrete time intervals
+# Multiply the angular velocity by the time interval to find the change in angle for that interval.
+# Sum these changes over time to get a cumulative estimate of the sensor's orientation (prone to drift)
+# 3. Use  accelerometer's measurements to determine the orientation relative to gravity
+# Combine  with gyroscope data to create more accurate, stable orientation estimate
+# 4. Apply kalman / complementary filter to combine the data (kalman is in another class)
+def calc_imu_data():
+    return None
+
+# Merge preprocessed ACC sensor DataFrames (from prep_acc_data) into one aligned DataFrame
+# Retrun pd.DataFrame: merged accelerometer + gyro data aligned to the reference sensor
+def merge_all_sensors(subject_acc_data, gait_start):
+    if not subject_acc_data:
+        raise ValueError("No accelerometer data provided to merge_all_sensors()")
+
+    # pick reference for time alignment
+    ref_sensor = "Waist" if "Waist" in subject_acc_data else list(subject_acc_data.keys())[0]
+    ref_time = subject_acc_data[ref_sensor]["t_sec"].values
+    aligned = pd.DataFrame({"t_sec": ref_time})
+
+    # merge interpolated columns for all sensors
+    for sensor, df in subject_acc_data.items():
+        for col in ["acc_x", "acc_y", "acc_z", "gyro_x", "gyro_y", "gyro_z"]:
+            aligned[f"{sensor}_{col}"] = np.interp(ref_time, df["t_sec"], df[col])
+
+    # reconstruct absolute timestamps
+    aligned["timestamp"] = [
+        (gait_start + pd.to_timedelta(t, unit="s")).strftime("%H:%M:%S.%f")[:-3]
+        for t in aligned["t_sec"]
+    ]
+
+    return aligned
+
+#LShank, RShank, Waist, Arm
+# timestamp, acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z, NC/SC (not important)
+#Sampled at 500Hz => 2ms / sample
+#Missing 1-2 CSVs
+#Likely skips over the 8th subject due to the actual data being 2 folders rather than 1 folder deep
+#Need to align sensors (LShank, RShank, Waist, Arm) 
+# ^^ (maybe make into a singular mne object so it is easier to work with)
+def prep_acc_data(path_acc, sensor_loc, gait_start): 
+    file_path = os.path.join(path_acc, f"{sensor_loc}.csv")
+
+    if not os.path.exists(file_path):
+        print(f"Missing file for {sensor_loc}: {file_path}")
+        return None
+    
+    # Load CSV safely
+    df = pd.read_csv(
+        file_path,
+        header=None,
+        names=["timestamp", "acc_x", "acc_y", "acc_z", "gyro_x", "gyro_y", "gyro_z", "extra"],
+        index_col=False,
+        engine="python",
+    )
+
+    # Clean timestamp column
+    df["timestamp"] = df["timestamp"].astype(str).str.strip().str.strip(",")
+    df["timestamp"] = pd.to_datetime(df["timestamp"], format="%Y_%m_%d_%H_%M_%S_%f", errors="coerce")
+    df = df.dropna(subset=["timestamp"])
+
+    # Convert timestamps to seconds since first record
+    t0 = df["timestamp"].iloc[0]
+    df["t_sec"] = (df["timestamp"] - t0).dt.total_seconds()
+
+    # Handle duplicates by averaging over duplicates
+    df = df.groupby("t_sec", as_index=False).mean(numeric_only=True)
+
+    # Create new 500 Hz timeline (0.002 s spacing)
+    t_interp = np.arange(df["t_sec"].iloc[0], df["t_sec"].iloc[-1], 1/500)
+
+    # Interpolate each column
+    interp_df = pd.DataFrame({"t_sec": t_interp})
+    for col in ["acc_x", "acc_y", "acc_z", "gyro_x", "gyro_y", "gyro_z"]:
+        f = interp1d(df["t_sec"], df[col], kind="cubic", fill_value="extrapolate")
+        interp_df[col] = f(t_interp)
+
+    # Create absolute timestamps relative to gait_start
+    interp_df["timestamp"] = [
+        (gait_start + timedelta(seconds=t)).strftime("%H:%M:%S.%f")[:-3]
+        for t in interp_df["t_sec"]
+    ]
+    return interp_df
+
+
+def create_kalman_filter(dt=0.002):
+    # State: [angle, bias]
+    F = np.array([[1, -dt],
+                  [0,  1]])          # State transition (angle decreases by bias each step)
+
+    B = np.array([[dt],
+                  [0]])              # Control input (gyro rate)
+
+    H = np.array([[1, 0]])           # We measure only the angle (from accelerometer)
+
+    Q = np.array([[1e-5, 0],
+                  [0, 1e-6]])        # Process noise covariance
+    R = np.array([[1e-2]])           # Measurement noise covariance
+
+    x0 = np.zeros((2, 1))            # Initial state [angle=0, bias=0]
+    P0 = np.eye(2) * 0.01            # Initial covariance
+
+    return KalmanFilter(F, B, H, Q, R, x0, P0)
+
+def fuse_imu_data(df):
+    dt = 0.002  # 500 Hz
+    kf_x = create_kalman_filter(dt)
+    kf_y = create_kalman_filter(dt)
+    kf_z = create_kalman_filter(dt)
+
+    fused_pitch, fused_roll, fused_yaw = [], [], []
+
+    for _, row in df.iterrows():
+        # Gyro input (rad/s)
+        gyro = np.array([[row["gyro_x"]], [row["gyro_y"]], [row["gyro_z"]]])
+
+        # Acc-derived angles
+        acc_x, acc_y, acc_z = row["acc_x"], row["acc_y"], row["acc_z"]
+        pitch_meas = np.arctan2(-acc_x, np.sqrt(acc_y**2 + acc_z**2))
+        roll_meas  = np.arctan2(acc_y, acc_z)
+
+        # X-axis (pitch)
+        kf_x.predict(u=np.array([[gyro[0,0]]]))
+        kf_x.update(np.array([[pitch_meas]]))
+        fused_pitch.append(kf_x.estimate0[0,0])
+
+        # Y-axis (roll)
+        kf_y.predict(u=np.array([[gyro[1,0]]]))
+        kf_y.update(np.array([[roll_meas]]))
+        fused_roll.append(kf_y.estimate0[0,0])
+
+        # Z-axis (yaw — if magnetometer existed, we’d use it)
+        kf_z.predict(u=np.array([[gyro[2,0]]]))
+        fused_yaw.append(kf_z.estimate0[0,0])
+
+    fused_df = df.copy()
+    fused_df["pitch"] = np.degrees(fused_pitch)
+    fused_df["roll"] = np.degrees(fused_roll)
+    fused_df["yaw"] = np.degrees(fused_yaw)
+
+    return fused_df
 
 
 #Running plots and preproc data
-
 ROOT = "/Users/nathangu/Desktop/Pytorch/NT/t8j8v4hnm4-1/Raw"  
 SENSORS = ["LShank", "RShank", "Waist", "Arm"]
 GAIT_START_STR = "2019-12-18 09:28:46.727"  # replace per-subject for different gait starts
@@ -391,61 +456,94 @@ subject_dirs = sorted([
 
 print(f"Found {len(subject_dirs)} subject folders under {ROOT}:\n", subject_dirs)
 
+
 # Main loop
+
+# Run this once, should allow you to download the data files
+
+# url = 'https://drive.google.com/uc?export=download&id=1yc1evq9s3N7tfYX_vJbchFgKuwbFJOhJ?'
+# response = requests.get(url)
+# with open('local_filename.ext', 'wb') as file:
+#     file.write(response.content)
+
+root_dir = '/Users/nathangu/Desktop/Pytorch/NT/t8j8v4hnm4-1/Raw'
+
 all_subjects_data = {}   # store results keyed by subject id (folder name)
+
 for subj_path in subject_dirs:
     subj_id = os.path.basename(subj_path)
-    print(f"\n--- SUBJECT {subj_id} ---")
+    print(f"\nSUBJECT {subj_id}")
     
-    # 1) find vhdr file for this subject
+    #Loading EEG / EMG
     vhdr_pattern = os.path.join(subj_path, "*.vhdr")
     vhdr_files = glob.glob(vhdr_pattern)
     if len(vhdr_files) == 0:
-        print(f"  No .vhdr found in {subj_path}, skipping EEG/EMG preprocessing for this subject.")
+        print(f"No .vhdr found in {subj_path}, skipping EEG/EMG preprocessing for this subject.")
         raw_eeg = raw_emg = ica = raw_emg_filtered = None
         events = event_id = None
     else:
         vhdr_file = vhdr_files[0]  
-        print(f"  Found VHDR: {os.path.basename(vhdr_file)}")
+        print(f"Found VHDR: {os.path.basename(vhdr_file)}")
         raw_eeg, raw_emg, ica, raw_emg_filtered = prep(vhdr_file, run_ica=True)
         raw_for_events = read_raw_brainvision(vhdr_file, preload=True)
         events, event_id = mne.events_from_annotations(raw_for_events)
-        print(f"  Loaded EEG/EMG. EMG channels: {raw_emg.ch_names if raw_emg is not None else 'None'}")
+        print(f"Loaded EEG/EMG. EMG channels: {raw_emg.ch_names if raw_emg is not None else 'None'}")
     
+    #Load ACC / gyro
     subj_acc_data = {}
     for sensor in SENSORS:
         csv_path = os.path.join(subj_path, f"{sensor}.csv")
         if os.path.exists(csv_path):
-            print(f"  Loading ACC CSV: {sensor}.csv")
-            df_acc = prep_acc_data(subj_path, sensor, GAIT_START) 
-            print(df_acc.head())
-            print(df_acc.shape)
-
-            if df_acc is None:
-                print(f"    prep_acc_data returned None for {sensor}")
-            else:
-                print(f"    {sensor}: {len(df_acc)} samples, t_sec range {df_acc['t_sec'].iloc[0]:.3f} - {df_acc['t_sec'].iloc[-1]:.3f}s")
+            print(f"Loading ACC CSV: {sensor}.csv")
+            df_acc = prep_acc_data(subj_path, sensor, GAIT_START)
+            
+            if df_acc is not None:
+                print(f"{sensor}: {len(df_acc)} samples, "
+                      f"t_sec range {df_acc['t_sec'].iloc[0]:.3f} - {df_acc['t_sec'].iloc[-1]:.3f}s")
                 subj_acc_data[sensor] = df_acc
+            else:
+                print(f"rep_acc_data returned None for {sensor}")
         else:
-            print(f"  Missing ACC CSV: {sensor}.csv (skipping)")
+            print(f"Missing ACC CSV: {sensor}.csv (skipping)")
 
-    # alignment using available sensors (Waist)
+    #Aligning sensors from ACC / gyro
     if len(subj_acc_data) == 0:
-        print("  No ACC sensors loaded for this subject.")
+        print("No ACC sensors loaded for this subject.")
         aligned_data = None
     else:
-        # choose reference sensor: Waist if present, otherwise first key
-        ref = "Waist" if "Waist" in subj_acc_data else next(iter(subj_acc_data))
-        ref_df = subj_acc_data[ref]
-        aligned_times = ref_df["t_sec"].values
-        aligned_data = {"t_sec": aligned_times}
-        for sensor_name, df in subj_acc_data.items():
-            for axis in ["acc_x", "acc_y", "acc_z"]:
-                aligned_data[f"{sensor_name}_{axis}"] = np.interp(aligned_times, df["t_sec"].values, df[axis].values)
-        aligned_data = pd.DataFrame(aligned_data)
-        print(f"  Aligned ACC shape: {aligned_data.shape}")
+        aligned_data = merge_all_sensors(subj_acc_data, GAIT_START)
+        print(f"Merged accelerometer dataframe shape: {aligned_data.shape}")
 
-    #store everything for downstream analysis/plotting
+
+    plot_combined_timeseries(raw_eeg, raw_emg_filtered, None, events, event_id, 30, 0)
+
+
+
+    #Fusing ACC + gyro for IMU data for each sensor
+    fused_imu_results = {}
+    if aligned_data is not None:
+        for sensor in subj_acc_data.keys():
+            print(f"\nFusing IMU data for {sensor}")
+            
+            # Extract just this sensor’s columns
+            sensor_cols = [c for c in aligned_data.columns if c.startswith(sensor)]
+            if not sensor_cols:
+                print(f"No matching columns found for {sensor}")
+                continue
+            
+            df_sensor = aligned_data[["timestamp"] + sensor_cols].copy()
+            df_sensor.columns = [c.replace(f"{sensor}_", "") for c in df_sensor.columns]  # normalize colnames
+            
+            # Apply fusion
+            fused_df = fuse_imu_data(df_sensor)
+            fused_imu_results[sensor] = fused_df
+            
+            print(f"{sensor} fused IMU shape: {fused_df.shape}")
+            print(f"Fused IMU preview for {sensor}:")
+            print(fused_df[['timestamp', 'pitch', 'roll', 'yaw']].head())
+    else:
+        print("No aligned accelerometer data to fuse IMU signals")
+    #Store results
     all_subjects_data[subj_id] = {
         "raw_eeg": raw_eeg,
         "raw_emg": raw_emg,
@@ -453,101 +551,24 @@ for subj_path in subject_dirs:
         "events": events,
         "event_id": event_id,
         "acc_dfs": subj_acc_data,
-        "acc_aligned": aligned_data
+        "acc_aligned": aligned_data,
+        "imu_fused": fused_imu_results
     }
+    break
 
-# quick summary
-print(f"\nProcessed {len(all_subjects_data)} subjects. Example keys for subject 001:")
-example = next(iter(all_subjects_data.keys()))
-print(example, list(all_subjects_data[example].keys()))
+#Single subject data
+merged_df = all_subjects_data["001"]["acc_aligned"]
+imu_df = all_subjects_data["001"]["imu_fused"]
+print("\nSample merged accelerometer data:")
+print(merged_df.head())
 
+print("\nSample fused IMU data for Waist:")
+if "Waist" in imu_df:
+    print(imu_df["Waist"].head())
 
-
-#### OLD LOOP
-# vhdr_files = get_vhdr_files(root_dir)
-# for file in vhdr_files:
-#     raw_eeg, raw_emg, ica, raw_emg_filtered = prep(file)
-#     # Load event info
-#     raw = mne.io.read_raw_brainvision(file, preload=True)
-#     # print(raw.info['ch_names'])
-#     events, event_id = mne.events_from_annotations(raw)
-
-
-#     # print(events)
-#     # print(event_id)
-    
-
-#     #Tasks 1, 2: 2.5 - 3 mins long
-#     #Tasks 3, 4: 30 - 60 sec
-    # plot_combi dned_timeseries(raw_eeg, raw_emg_filtered, None, events, event_id, duration=30, start=0)
-
-    # raw = mne.io.read_raw_brainvision(file, preload=True)
-    # print(raw.ch_names)
-
-    #EMG portion
-    # if raw_emg is not None:
-    #     data_original = raw_emg.get_data()
-    #     data_filtered = raw_emg_filtered.get_data()
-    #     sfreq = raw_emg.info['sfreq']
-    #     channel_names = raw_emg.ch_names
-    #     check_quality(data_original, sfreq, channel_names)
-    #     plot_emg(data_original, data_filtered, channel_names, sfreq)
-        # plot_spectrograms(data_original, data_filtered, sfreq, channel_names)
-    #     events, event_id = mne.events_from_annotations(raw_emg)
-    #     print(event_id)
-    #     print(events[:10])
-    #     print(events)
-    
-    #EEG portion
-    # if raw_eeg is not None:
-    #     data_eeg = raw_eeg.get_data()
-    #     sfreq_eeg = raw_eeg.info['sfreq']
-    #     channel_names_eeg = raw_eeg.ch_names
-    #     check_quality(data_eeg, sfreq_eeg, channel_names_eeg)
-    #     #Not a refined plot, super basic
-    #     raw_eeg.plot_psd(fmax=60)
-    #     raw_eeg.plot(duration=5, n_channels=10)
-    #     plt.tight_layout()
-    #     plt.show()
-    #     raw_eeg.compute_psd(fmax=50).plot(picks="data", exclude="bads", amplitude=False)
-    #     raw_eeg.plot(duration=5, n_channels=30)
-    #     plt.show()
-
-    # epochs = mne.Epochs(raw_eeg, events, event_id, tmin=-0.2, tmax=1.0, preload=True)
-    # times = np.arange(0, 1, 0.1)
-    # epochs.average().plot_topomap(times, ch_type='eeg')
-
-    # data_original = raw_emg.get_data()
-    # data_filtered = raw_emg_filtered.get_data()
-    # sfreq = raw_emg_filtered.info['sfreq']
-    # channel_names = raw_emg.ch_names
-
-    # print(f"\nFinal sampling rate: {sfreq} Hz")
-    # print(f"Data shape: {data_filtered.shape}")
-
-#debug
-# raw = mne.io.read_raw_brainvision(file, preload=True)
-
-#event markers
-# events, event_id = mne.events_from_annotations(raw)
-# print(event_id)
-# print(events[:10])
-# print(events)
-
-#epoching
-# epochs = mne.Epochs(raw, events, event_id, tmin=-0.2, tmax=1.0, preload=True)
-
-
-# for ch in raw.ch_names:
-#     print(ch)
-# raw.plot(duration=5, n_channels=10)
-
-# print(raw)
-# print(raw.get_data().shape)
-# print(raw.get_data()[:, :10])
-# print(raw._filenames)
-# print(np.ptp(raw.get_data()))
-
-
+# # quick summary
+# print(f"\nProcessed {len(all_subjects_data)} subjects. Example keys for subject 001:")
+# example = next(iter(all_subjects_data.keys()))
+# print(example, list(all_subjects_data[example].keys()))
 
 

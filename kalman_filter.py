@@ -22,7 +22,7 @@ class KalmanFilter:
     
     def predict(self, u):
         self.estimate0 = np.dot(self.transition, self.estimate0) + np.dot(self.control, u)
-        self.error_cov0 = np.dot(self.transition, np.dot(self.P, self.transition.T)) + self.proc_noise
+        self.error_cov0 = np.dot(self.transition, np.dot(self.error_cov0, self.transition.T)) + self.proc_noise
         return self.estimate0
     
     def update(self, z):

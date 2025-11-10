@@ -5,3 +5,4 @@ t8j8v4hnm4-1/Raw/
 datasets/
 data/
 *.DS_Store
+__pycache__/

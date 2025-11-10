@@ -33,3 +33,26 @@ class KalmanFilter:
         I = np.eye(self.error_cov0.shape[0])
         self.error_cov0 = np.dot(I - np.dot(K, self.observation), self.error_cov0)
         return self.estimate0
+    
+    #Creates the matrices for the kalman
+    #Generated with GPT because I have no clue what id put as input
+    def create_kalman_filter(self, dt=0.002):
+        # State: [angle, bias]
+        F = np.array([[1, -dt],
+                    [0,  1]])          # State transition (angle decreases by bias each step)
+
+        B = np.array([[dt],
+                    [0]])              # Control input (gyro rate)
+
+        H = np.array([[1, 0]])           # We measure only the angle (from accelerometer)
+
+        Q = np.array([[1e-5, 0],
+                    [0, 1e-6]])        # Process noise covariance
+        R = np.array([[1e-2]])           # Measurement noise covariance
+
+        x0 = np.zeros((2, 1))            # Initial state [angle=0, bias=0]
+        P0 = np.eye(2) * 0.01            # Initial covariance
+
+        return KalmanFilter(F, B, H, Q, R, x0, P0)
+
+

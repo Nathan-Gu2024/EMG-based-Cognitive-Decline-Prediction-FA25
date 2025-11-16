@@ -12,6 +12,20 @@ from plots import Plots
 
 ### Find the metrics for the FoG
 
+# 1. Check that our preprocessed data done accordingly and prep it for training
+#     1. Fully plot all the data (EMG, EEG, IMU) with the event markers present to make sure they line up
+#     2. Find the absolute timestamps for the rest of the 11 subjects
+#     3. Segment the data like that of the Github repo we are referencing 
+#     4. Incorporate multithreading to make the process of preprocessing the data quicker each run
+#     5. Do cross validation on the EEG / EMG data with the IMU data for FoG using an existing model that predicts FoG off of IMU data 
+#     6. Get the timeseries plot to be more interactive so its easier to see all the data
+
+
+
+# 2. Start training and tweaking the model for baseline XGBoost model
+#     1. Data augmentation to get as many features as possible from the data
+#     2. Find the precision and accuracy of the model
+#     3. Test with the weights for certain features within the model and determine whether or not there is imbalance in the data (then apply SMOTE); probably incorporate cross validation
 
 
 
@@ -62,8 +76,6 @@ for subj_path in subject_dirs:
         print(f"Loaded EEG/EMG. EMG channels: {raw_emg.ch_names if raw_emg is not None else 'None'}")
     
 
-    # Plots.plot_combined_timeseries(raw_eeg, raw_emg_filtered, None, events, event_id, 30, 0)
-
     #Load ACC / gyro
     subj_acc_data = {}
     for sensor in SENSORS:
@@ -90,8 +102,6 @@ for subj_path in subject_dirs:
         print(f"Merged accelerometer dataframe shape: {aligned_data.shape}")
 
 
-
-
     #Fusing ACC + gyro for IMU data for each sensor
     fused_imu_results = {}
     if aligned_data is not None:
@@ -104,12 +114,13 @@ for subj_path in subject_dirs:
                 print(f"No matching columns found for {sensor}")
                 continue
             
-            df_sensor = aligned_data[["timestamp"] + sensor_cols].copy()
+            df_sensor = aligned_data[["timestamp", "t_sec"] + sensor_cols].copy()
             df_sensor.columns = [c.replace(f"{sensor}_", "") for c in df_sensor.columns]  # normalize colnames
             
             # Apply fusion
             fused_df = Prep.fuse_imu_data(df_sensor)
             fused_imu_results[sensor] = fused_df
+            merged_fused_imu = Prep.merge_fused_imu(fused_imu_results)
             
             print(f"{sensor} fused IMU shape: {fused_df.shape}")
             print(f"Fused IMU preview for {sensor}:")
@@ -126,8 +137,12 @@ for subj_path in subject_dirs:
         "event_id": event_id,
         "acc_dfs": subj_acc_data,
         "acc_aligned": aligned_data,
-        "imu_fused": fused_imu_results
+        "imu_fused": fused_imu_results,
+        "imu_fused_by_sensor": fused_imu_results,
+        "imu_merged": merged_fused_imu
     }
+    Plots.plot_combined_timeseries(raw_eeg, raw_emg_filtered, fused_imu_results, events, event_id, 30, 0)
+
     # break
 #Single subject data
 # merged_df = all_subjects_data["001"]["acc_aligned"]

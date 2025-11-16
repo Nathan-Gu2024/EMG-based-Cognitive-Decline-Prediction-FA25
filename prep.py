@@ -197,3 +197,28 @@ class Prep:
         fused_df["yaw"] = np.degrees(fused_yaw)
 
         return fused_df
+
+    #Merges the IMU sensors: 
+    #['timestamp','t_sec','acc_x','acc_y','acc_z','gyro_x','gyro_y','gyro_z','pitch','roll','yaw']
+    # =>  LShank_pitch, LShank_roll, ... (aligned on t_sec, columns renamed)
+    def merge_fused_imu(fused_dict):
+        if not fused_dict:
+            return None
+
+        # Pick reference timeline
+        ref_sensor = "Waist" if "Waist" in fused_dict else list(fused_dict.keys())[0]
+        ref = fused_dict[ref_sensor][["t_sec"]].copy()
+
+        merged = ref.copy()
+
+        for sensor, df in fused_dict.items():
+            for col in ["pitch", "roll", "yaw"]:
+                if col in df.columns:
+                    merged[f"{sensor}_{col}"] = np.interp(
+                        ref["t_sec"], df["t_sec"], df[col]
+                    )
+
+        # Keep absolute timestamps
+        merged["timestamp"] = fused_dict[ref_sensor]["timestamp"]
+
+        return merged

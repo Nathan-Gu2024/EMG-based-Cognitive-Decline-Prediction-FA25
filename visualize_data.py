@@ -122,9 +122,9 @@ for subj_path in subject_dirs:
             fused_imu_results[sensor] = fused_df
             merged_fused_imu = Prep.merge_fused_imu(fused_imu_results)
             
-            print(f"{sensor} fused IMU shape: {fused_df.shape}")
-            print(f"Fused IMU preview for {sensor}:")
-            print(fused_df[['timestamp', 'pitch', 'roll', 'yaw']].head())
+            # print(f"{sensor} fused IMU shape: {fused_df.shape}")
+            # print(f"Fused IMU preview for {sensor}:")
+            # print(fused_df[['timestamp', 'pitch', 'roll', 'yaw']].head())
     else:
         print("No aligned accelerometer data to fuse IMU signals")
 

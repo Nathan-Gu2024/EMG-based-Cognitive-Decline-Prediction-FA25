@@ -14,7 +14,6 @@ class Prep:
         print(f"Found {len(vhdr_files)} .vhdr files")
         return vhdr_files
 
-    #Needs to handle subject 8's files still, can't parse since 2 layers of folders
     def prep(file_path, run_ica=True):
         print(f"Loading: {file_path}")
         raw = read_raw_brainvision(file_path, preload=True)

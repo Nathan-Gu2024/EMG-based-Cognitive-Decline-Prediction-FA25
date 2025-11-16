@@ -70,7 +70,7 @@ class Plots:
     # Extend the graphs to include the full length of the task (make it interactable)
     #imu_sensors: stores the abosolute timestamp, pitch, roll, and yaw for each sensor
     #IMU: pitch, roll, yaw
-    #Line up with absolute timestamp(?)
+    #Fix the scaling on the IMU
     def plot_combined_timeseries(raw_eeg, raw_emg_filtered, imu_dict, events, event_id, duration, start):
         eeg_data = None
         eeg_channels = []
@@ -146,7 +146,7 @@ class Plots:
             if idx == len(emg_channels) - 1:
                 fig.colorbar(im, ax=ax, shrink=0.7)
 
-
+        #IMU plot
         imu_ax = axes[-1]
         
         for sensor_name, df in imu_dict.items():

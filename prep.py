@@ -196,6 +196,7 @@ class Prep:
         fused_df["yaw"] = np.degrees(fused_yaw)
 
         return fused_df
+    
 
     #Merges the IMU sensors: 
     #['timestamp','t_sec','acc_x','acc_y','acc_z','gyro_x','gyro_y','gyro_z','pitch','roll','yaw']
@@ -221,3 +222,105 @@ class Prep:
         merged["timestamp"] = fused_dict[ref_sensor]["timestamp"]
 
         return merged
+    
+
+
+
+    def fuse_imu_data_vectorized(df, sfreq=500.0, alpha=0.98):
+        dt = 1.0 / sfreq
+
+        acc_x = df["acc_x"].to_numpy()
+        acc_y = df["acc_y"].to_numpy()
+        acc_z = df["acc_z"].to_numpy()
+
+        gyro_x = np.deg2rad(df["gyro_x"].to_numpy())
+        gyro_y = np.deg2rad(df["gyro_y"].to_numpy())
+        gyro_z = np.deg2rad(df["gyro_z"].to_numpy())
+
+        # accel angles
+        pitch_acc = np.arctan2(-acc_x, np.sqrt(acc_y**2 + acc_z**2))
+        roll_acc  = np.arctan2(acc_y, acc_z)
+
+        # better stationarity detection
+        acc_lp = pd.Series(acc_x**2 + acc_y**2 + acc_z**2).rolling(200, center=True).mean().to_numpy()
+        stationary = acc_lp < np.nanpercentile(acc_lp, 5)
+
+        gyro_bias_x = np.nanmean(gyro_x[stationary])
+        gyro_bias_y = np.nanmean(gyro_y[stationary])
+        gyro_bias_z = np.nanmean(gyro_z[stationary])
+
+        gx = gyro_x - gyro_bias_x
+        gy = gyro_y - gyro_bias_y
+        gz = gyro_z - gyro_bias_z
+
+        pitch_gyro = np.cumsum(gx * dt)
+        roll_gyro  = np.cumsum(gy * dt)
+        yaw_gyro   = np.cumsum(gz * dt)
+
+        # complementary fusion
+        pitch = alpha * pitch_gyro + (1-alpha) * pitch_acc
+        roll  = alpha * roll_gyro  + (1-alpha) * roll_acc
+
+        # yaw stabilization using derivative of accel heading
+        yaw_acc = np.unwrap(np.arctan2(acc_y, acc_x))
+        yaw = alpha * yaw_gyro + (1-alpha) * yaw_acc
+
+        out = df.copy()
+        out["pitch"] = np.degrees(pitch)
+        out["roll"]  = np.degrees(roll)
+        out["yaw"]   = np.degrees(yaw)
+
+        return out
+    
+    
+    def fuse_imu_data_kalman(df, sfreq=500.0, q_var=1e-3, r_var=1e-2):
+        dt = 1.0 / sfreq
+        # create KFs (for pitch, roll, yaw)
+        kf_pitch = KalmanFilter.create_kalman_filter(dt, q_var, r_var)
+        kf_roll  = KalmanFilter.create_kalman_filter(dt, q_var, r_var)
+        kf_yaw   = KalmanFilter.create_kalman_filterupdate_plots(dt, q_var, r_var)  # yaw has no accel measurement; we will integrate gyro
+
+        n = len(df)
+        pitch_out = np.zeros(n)
+        roll_out = np.zeros(n)
+        yaw_out = np.zeros(n)
+
+        # initial states
+        # compute initial accel angles for better initialization
+        ax0, ay0, az0 = df["acc_x"].iloc[0], df["acc_y"].iloc[0], df["acc_z"].iloc[0]
+        pitch0 = np.arctan2(-ax0, np.sqrt(ay0**2 + az0**2))
+        roll0  = np.arctan2(ay0, az0)
+        kf_pitch.estimate0 = np.array([[pitch0],[0.0]])
+        kf_roll.estimate0  = np.array([[roll0],[0.0]])
+        kf_yaw.estimate0   = np.array([[0.0],[0.0]])
+
+        # ensure Kalman has P attribute name expected in your implementation
+        # some implementations use .P or .error_cov0 — adjust below if necessary
+        for i, row in df.iterrows():
+            gx, gy, gz = row["gyro_x"], row["gyro_y"], row["gyro_z"]
+            ax, ay, az = row["acc_x"], row["acc_y"], row["acc_z"]
+
+            # accel-derived measurements
+            pitch_meas = np.arctan2(-ax, np.sqrt(ay**2 + az**2))
+            roll_meas  = np.arctan2(ay, az)
+            # yaw has no accel measurement (unless mag present)
+
+            # Predict step (control input is gyro reading)
+            kf_pitch.predict(u=np.array([[gx]]))
+            kf_roll.predict(u=np.array([[gy]]))
+            kf_yaw.predict(u=np.array([[gz]]))
+
+            # Update step with accel-derived measurement
+            kf_pitch.update(np.array([[pitch_meas]]))
+            kf_roll.update(np.array([[roll_meas]]))
+            # do not update yaw (no measurement), just read predicted state
+
+            pitch_out[i] = kf_pitch.estimate0[0,0]
+            roll_out[i]  = kf_roll.estimate0[0,0]
+            yaw_out[i]   = kf_yaw.estimate0[0,0]
+
+        out = df.copy()
+        out["pitch"] = np.degrees(pitch_out)
+        out["roll"]  = np.degrees(roll_out)
+        out["yaw"]   = np.degrees(yaw_out)
+        return out

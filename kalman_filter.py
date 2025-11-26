@@ -36,7 +36,7 @@ class KalmanFilter:
     
     #Creates the matrices for the kalman
     #Generated with GPT because I have no clue what id put as input
-    def create_kalman_filter(self, dt=0.002):
+    def create_kalman_filter(dt, q_var=1e-3, r_var=1e-2):
         # State: [angle, bias]
         F = np.array([[1, -dt],
                     [0,  1]])          # State transition (angle decreases by bias each step)
@@ -46,12 +46,12 @@ class KalmanFilter:
 
         H = np.array([[1, 0]])           # We measure only the angle (from accelerometer)
 
-        Q = np.array([[1e-5, 0],
-                    [0, 1e-6]])        # Process noise covariance
-        R = np.array([[1e-2]])           # Measurement noise covariance
+        Q = np.eye(2) * q_var
+
+        R = np.array([[r_var]])          # Measurement noise covariance
 
         x0 = np.zeros((2, 1))            # Initial state [angle=0, bias=0]
-        P0 = np.eye(2) * 0.01            # Initial covariance
+        P0 = np.eye(2) * 0.1            # Initial covariance
 
         return KalmanFilter(F, B, H, Q, R, x0, P0)
 

@@ -8,6 +8,8 @@ from datetime import *
 from kalman_filter import KalmanFilter
 from prep import Prep
 from plots import Plots
+from dashboard import Dashboard
+from parallel_proc import Parallel
 
 
 ### Find the metrics for the FoG
@@ -30,118 +32,173 @@ from plots import Plots
 
 
 #Running plots and preproc data
-ROOT = "/Users/nathangu/Desktop/Pytorch/NT/t8j8v4hnm4-1/Raw"  
-SENSORS = ["LShank", "RShank", "Waist", "Arm"]
-GAIT_START_STR = "2019-12-18 09:28:46.727"  # replace per-subject for different gait starts
-GAIT_START = datetime.strptime(GAIT_START_STR, "%Y-%m-%d %H:%M:%S.%f")
+if __name__ == "__main__":
+    USE_KALMAN = False  
+    ROOT = "/Users/nathangu/Desktop/Pytorch/NT/t8j8v4hnm4-1/Raw"  
+    SENSORS = ["LShank", "RShank", "Waist", "Arm"]
+    GAIT_START_STR = "2019-12-18 09:28:46.727"  # replace per-subject for different gait starts
+    GAIT_START = datetime.strptime(GAIT_START_STR, "%Y-%m-%d %H:%M:%S.%f")
 
-subject_dirs = sorted([
-    os.path.join(ROOT, d) for d in os.listdir(ROOT)
-    if os.path.isdir(os.path.join(ROOT, d))
-])
+    import multiprocessing
+    multiprocessing.set_start_method("spawn", force = True)
+    os.environ["USE_KALMAN"] = "True" if USE_KALMAN else "False"
+    results = Parallel.run_parallel(ROOT, GAIT_START, SENSORS, max_workers=4)
+    print("processed:", list(results.keys()))
+    # subject_dirs = sorted([
+    #     os.path.join(ROOT, d) for d in os.listdir(ROOT)
+    #     if os.path.isdir(os.path.join(ROOT, d))
+    # ])
 
-print(f"Found {len(subject_dirs)} subject folders under {ROOT}:\n", subject_dirs)
+    # print(f"Found {len(subject_dirs)} subject folders under {ROOT}:\n", subject_dirs)
 
 
-# Main loop
+    # Main loop
 
-# Run this once, should allow you to download the data files
+    # Run this once, should allow you to download the data files
 
-# url = 'https://drive.google.com/uc?export=download&id=1yc1evq9s3N7tfYX_vJbchFgKuwbFJOhJ?'
-# response = requests.get(url)
-# with open('local_filename.ext', 'wb') as file:
-#     file.write(response.content)
+    # url = 'https://drive.google.com/uc?export=download&id=1yc1evq9s3N7tfYX_vJbchFgKuwbFJOhJ?'
+    # response = requests.get(url)
+    # with open('local_filename.ext', 'wb') as file:
+    #     file.write(response.content)
 
-root_dir = '/Users/nathangu/Desktop/Pytorch/NT/t8j8v4hnm4-1/Raw'
+    # root_dir = '/Users/nathangu/Desktop/Pytorch/NT/t8j8v4hnm4-1/Raw'
 
-all_subjects_data = {}   # store results keyed by subject id (folder name)
+    all_subjects_data = {}   # store results keyed by subject id (folder name)
+    print("Running parallel preprocessing...")
 
-for subj_path in subject_dirs:
-    subj_id = os.path.basename(subj_path)
-    print(f"\nSUBJECT {subj_id}")
+    all_subjects_data = Parallel.run_parallel(
+        root_dir=ROOT,
+        gait_start=GAIT_START,
+        sensors=SENSORS,
+        max_workers=4              # or None to auto-select
+    )
+
+    print(f"Loaded {len(all_subjects_data)} subjects.")
+    app = Dashboard.build_dashboard_all_subjects(all_subjects_data)
+    app.run(debug=False, use_reloader=False, port=8050)
+
+# for subj_path in subject_dirs:
+#     subj_id = os.path.basename(subj_path)
+#     print(f"\nSUBJECT {subj_id}")
     
-    #Loading EEG / EMG
-    vhdr_pattern = os.path.join(subj_path, "*.vhdr")
-    vhdr_files = glob.glob(vhdr_pattern)
-    if len(vhdr_files) == 0:
-        print(f"No .vhdr found in {subj_path}, skipping EEG/EMG preprocessing for this subject.")
-        raw_eeg = raw_emg = ica = raw_emg_filtered = None
-        events = event_id = None
-    else:
-        vhdr_file = vhdr_files[0]  
-        print(f"Found VHDR: {os.path.basename(vhdr_file)}")
-        raw_eeg, raw_emg, ica, raw_emg_filtered = Prep.prep(vhdr_file, run_ica=True)
-        raw_for_events = read_raw_brainvision(vhdr_file, preload=True)
-        events, event_id = mne.events_from_annotations(raw_for_events)
-        print(f"Loaded EEG/EMG. EMG channels: {raw_emg.ch_names if raw_emg is not None else 'None'}")
+#     #Loading EEG / EMG
+#     vhdr_pattern = os.path.join(subj_path, "*.vhdr")
+#     vhdr_files = glob.glob(vhdr_pattern)
+#     if len(vhdr_files) == 0:
+#         print(f"No .vhdr found in {subj_path}, skipping EEG/EMG preprocessing for this subject.")
+#         raw_eeg = raw_emg = ica = raw_emg_filtered = None
+#         events = event_id = None
+#     else:
+#         vhdr_file = vhdr_files[0]  
+#         print(f"Found VHDR: {os.path.basename(vhdr_file)}")
+#         raw_eeg, raw_emg, ica, raw_emg_filtered = Prep.prep(vhdr_file, run_ica=True)
+#         raw_for_events = read_raw_brainvision(vhdr_file, preload=True)
+#         events, event_id = mne.events_from_annotations(raw_for_events)
+#         print(f"Loaded EEG/EMG. EMG channels: {raw_emg.ch_names if raw_emg is not None else 'None'}")
     
 
-    #Load ACC / gyro
-    subj_acc_data = {}
-    for sensor in SENSORS:
-        csv_path = os.path.join(subj_path, f"{sensor}.csv")
-        if os.path.exists(csv_path):
-            print(f"Loading ACC CSV: {sensor}.csv")
-            df_acc = Prep.prep_acc_data(subj_path, sensor, GAIT_START)
+#     #Load ACC / gyro
+#     subj_acc_data = {}
+#     for sensor in SENSORS:
+#         csv_path = os.path.join(subj_path, f"{sensor}.csv")
+#         if os.path.exists(csv_path):
+#             print(f"Loading ACC CSV: {sensor}.csv")
+#             df_acc = Prep.prep_acc_data(subj_path, sensor, GAIT_START)
             
-            if df_acc is not None:
-                print(f"{sensor}: {len(df_acc)} samples, "
-                      f"t_sec range {df_acc['t_sec'].iloc[0]:.3f} - {df_acc['t_sec'].iloc[-1]:.3f}s")
-                subj_acc_data[sensor] = df_acc
-            else:
-                print(f"rep_acc_data returned None for {sensor}")
-        else:
-            print(f"Missing ACC CSV: {sensor}.csv (skipping)")
+#             if df_acc is not None:
+#                 print(f"{sensor}: {len(df_acc)} samples, "
+#                       f"t_sec range {df_acc['t_sec'].iloc[0]:.3f} - {df_acc['t_sec'].iloc[-1]:.3f}s")
+#                 subj_acc_data[sensor] = df_acc
+#             else:
+#                 print(f"rep_acc_data returned None for {sensor}")
+#         else:
+#             print(f"Missing ACC CSV: {sensor}.csv (skipping)")
 
-    #Aligning sensors from ACC / gyro
-    if len(subj_acc_data) == 0:
-        print("No ACC sensors loaded for this subject.")
-        aligned_data = None
-    else:
-        aligned_data = Prep.merge_all_sensors(subj_acc_data, GAIT_START)
-        print(f"Merged accelerometer dataframe shape: {aligned_data.shape}")
+#     #Aligning sensors from ACC / gyro
+#     if len(subj_acc_data) == 0:
+#         print("No ACC sensors loaded for this subject.")
+#         aligned_data = None
+#     else:
+#         aligned_data = Prep.merge_all_sensors(subj_acc_data, GAIT_START)
+#         print(f"Merged accelerometer dataframe shape: {aligned_data.shape}")
 
 
-    #Fusing ACC + gyro for IMU data for each sensor
-    fused_imu_results = {}
-    if aligned_data is not None:
-        for sensor in subj_acc_data.keys():
-            print(f"\nFusing IMU data for {sensor}")
+#     #Fusing ACC + gyro for IMU data for each sensor
+#     fused_imu_results = {}
+#     if aligned_data is not None:
+#         for sensor in subj_acc_data.keys():
+#             print(f"\nFusing IMU data for {sensor}")
             
-            # Extract just this sensor’s columns
-            sensor_cols = [c for c in aligned_data.columns if c.startswith(sensor)]
-            if not sensor_cols:
-                print(f"No matching columns found for {sensor}")
-                continue
+#             # Extract just this sensor’s columns
+#             sensor_cols = [c for c in aligned_data.columns if c.startswith(sensor)]
+#             if not sensor_cols:
+#                 print(f"No matching columns found for {sensor}")
+#                 continue
             
-            df_sensor = aligned_data[["timestamp", "t_sec"] + sensor_cols].copy()
-            df_sensor.columns = [c.replace(f"{sensor}_", "") for c in df_sensor.columns]  # normalize colnames
+#             df_sensor = aligned_data[["timestamp", "t_sec"] + sensor_cols].copy()
+#             df_sensor.columns = [c.replace(f"{sensor}_", "") for c in df_sensor.columns]  # normalize colnames
             
-            # Apply fusion
-            fused_df = Prep.fuse_imu_data(df_sensor)
-            fused_imu_results[sensor] = fused_df
-            merged_fused_imu = Prep.merge_fused_imu(fused_imu_results)
+#             # Apply fusion
+#             fused_df = Prep.fuse_imu_data(df_sensor)
+#             fused_imu_results[sensor] = fused_df
+#             merged_fused_imu = Prep.merge_fused_imu(fused_imu_results)
             
-            # print(f"{sensor} fused IMU shape: {fused_df.shape}")
-            # print(f"Fused IMU preview for {sensor}:")
-            # print(fused_df[['timestamp', 'pitch', 'roll', 'yaw']].head())
-    else:
-        print("No aligned accelerometer data to fuse IMU signals")
+#             # print(f"{sensor} fused IMU shape: {fused_df.shape}")
+#             # print(f"Fused IMU preview for {sensor}:")
+#             # print(fused_df[['timestamp', 'pitch', 'roll', 'yaw']].head())
+#     else:
+#         print("No aligned accelerometer data to fuse IMU signals")
+
+
+#     fused_vec = {}
+#     fused_kal = {}
+
+#     for sensor in subj_acc_data.keys():
+#         cols = [c for c in aligned_data.columns if c.startswith(sensor)]
+#         df_sensor = aligned_data[["t_sec", "timestamp"] + cols].copy()
+#         df_sensor.columns = ["t_sec", "timestamp"] + [
+#             c.replace(f"{sensor}_", "") for c in cols
+#         ]
+
+#         # Always compute complementary (fast)
+#         fused_vec[sensor] = Prep.fuse_imu_data_vectorized(
+#             df_sensor, sfreq=500.0, alpha=0.98
+#         )
+
+#         if USE_KALMAN:
+#             fused_kal[sensor] = Prep.fuse_imu_data_kalman(
+#                 df_sensor, sfreq=500.0, q_var=1e-4, r_var=1e-2
+#             )
+
+#     subject_store = {
+#         "raw_eeg": raw_eeg,
+#         "raw_emg_filtered": raw_emg_filtered,
+#         "imu_fused_vec" : fused_vec,
+#         "events": events,
+#         "event_id": event_id
+#     }
+#     if USE_KALMAN:
+#         subject_store["imu_fused_kal"] = fused_kal
+
+#     all_subjects_data[subj_id] = subject_store
+
+# app = Dashboard.build_dashboard_all_subjects(all_subjects_data)
+# app.run(debug=False, use_reloader=False, port=8050)
 
     #Store results
-    all_subjects_data[subj_id] = {
-        "raw_eeg": raw_eeg,
-        "raw_emg": raw_emg,
-        "raw_emg_filtered": raw_emg_filtered,
-        "events": events,
-        "event_id": event_id,
-        "acc_dfs": subj_acc_data,
-        "acc_aligned": aligned_data,
-        "imu_fused": fused_imu_results,
-        "imu_fused_by_sensor": fused_imu_results,
-        "imu_merged": merged_fused_imu
-    }
-    Plots.plot_combined_timeseries(raw_eeg, raw_emg_filtered, fused_imu_results, events, event_id, 30, 0)
+    # all_subjects_data[subj_id] = {
+    #     "raw_eeg": raw_eeg,
+    #     "raw_emg": raw_emg,
+    #     "raw_emg_filtered": raw_emg_filtered,
+    #     "events": events,
+    #     "event_id": event_id,
+    #     "acc_dfs": subj_acc_data,
+    #     "acc_aligned": aligned_data,
+    #     "imu_fused": fused_imu_results,
+    #     "imu_fused_by_sensor": fused_imu_results,
+    #     "imu_merged": merged_fused_imu
+    # }
+    # Plots.plot_combined_timeseries(raw_eeg, raw_emg_filtered, fused_imu_results, events, event_id, 30, 0)
 
     # break
 #Single subject data

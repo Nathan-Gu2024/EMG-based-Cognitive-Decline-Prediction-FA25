@@ -66,6 +66,61 @@ class Plots:
             plt.show()
 
 
+
+
+    def plot_fog_windows(imu_df, labels, sfreq=128, window_sec=3.0, overlap_sec=0.25):
+        FOG  = 1
+        WALK = 2
+        STOP = 3
+        LABEL_COLORS = {
+            FOG:  ("red",   0.25),
+            WALK: ("green", 0.20),
+            STOP: ("blue",  0.25),
+        }
+
+        """
+        Plot acc_x, acc_y, acc_z with background window coloring.
+        """
+
+        t = imu_df["t_sec"].to_numpy()
+
+        ax_x = imu_df["acc_x"].to_numpy()
+        ax_y = imu_df["acc_y"].to_numpy()
+        ax_z = imu_df["acc_z"].to_numpy()
+
+        W = int(window_sec * sfreq)
+        step = int(overlap_sec * sfreq)
+
+        fig, ax = plt.subplots(figsize=(14, 5))
+
+        for k, label in enumerate(labels):
+            start_idx = k * step
+            end_idx = start_idx + W
+            if end_idx >= len(t):
+                break
+
+            color, alpha = LABEL_COLORS[label]
+            ax.axvspan(
+                t[start_idx],
+                t[end_idx],
+                color=color,
+                alpha=alpha,
+                linewidth=0
+            )
+
+        ax.plot(t, ax_x, label="acc_x", linewidth=1)
+        ax.plot(t, ax_y, label="acc_y", linewidth=1)
+        ax.plot(t, ax_z, label="acc_z", linewidth=1)
+
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Acceleration (m/s²)")
+        ax.set_title("Acceleration with FoG window labels")
+
+        ax.legend(loc="upper right")
+        plt.tight_layout()
+        plt.show()
+
+
     # Move the event markers to the bottom, and add in accelerometer signal data for gait context
     # Extend the graphs to include the full length of the task (make it interactable)
     #imu_sensors: stores the abosolute timestamp, pitch, roll, and yaw for each sensor

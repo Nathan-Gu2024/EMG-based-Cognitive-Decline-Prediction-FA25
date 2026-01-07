@@ -10,7 +10,7 @@ from prep import Prep
 from plots import Plots
 from dashboard import Dashboard
 from parallel_proc import Parallel
-
+from FoG_CNN_class import FoG_Class as FC
 
 ### Find the metrics for the FoG
 
@@ -36,46 +36,82 @@ if __name__ == "__main__":
     USE_KALMAN = False  
     ROOT = "/Users/nathangu/Desktop/Pytorch/NT/t8j8v4hnm4-1/Raw"  
     SENSORS = ["LShank", "RShank", "Waist", "Arm"]
-    GAIT_START_STR = "2019-12-18 09:28:46.727"  # replace per-subject for different gait starts
+
+    GAIT_START_STR = "2019-12-18 09:28:46.727"
     GAIT_START = datetime.strptime(GAIT_START_STR, "%Y-%m-%d %H:%M:%S.%f")
 
     import multiprocessing
-    multiprocessing.set_start_method("spawn", force = True)
+    multiprocessing.set_start_method("spawn", force=True)
     os.environ["USE_KALMAN"] = "True" if USE_KALMAN else "False"
-    results = Parallel.run_parallel(ROOT, GAIT_START, SENSORS, max_workers=4)
-    print("processed:", list(results.keys()))
-    # subject_dirs = sorted([
-    #     os.path.join(ROOT, d) for d in os.listdir(ROOT)
-    #     if os.path.isdir(os.path.join(ROOT, d))
-    # ])
 
-    # print(f"Found {len(subject_dirs)} subject folders under {ROOT}:\n", subject_dirs)
-
-
-    # Main loop
-
-    # Run this once, should allow you to download the data files
-
-    # url = 'https://drive.google.com/uc?export=download&id=1yc1evq9s3N7tfYX_vJbchFgKuwbFJOhJ?'
-    # response = requests.get(url)
-    # with open('local_filename.ext', 'wb') as file:
-    #     file.write(response.content)
-
-    # root_dir = '/Users/nathangu/Desktop/Pytorch/NT/t8j8v4hnm4-1/Raw'
-
-    all_subjects_data = {}   # store results keyed by subject id (folder name)
     print("Running parallel preprocessing...")
-
     all_subjects_data = Parallel.run_parallel(
         root_dir=ROOT,
         gait_start=GAIT_START,
         sensors=SENSORS,
-        max_workers=4              # or None to auto-select
+        max_workers=4
+    )
+    subj_id = list(all_subjects_data.keys())[0]
+    sd = all_subjects_data[subj_id]
+
+    acc_df = sd["acc_aligned"]
+    print(acc_df.columns.tolist())
+
+    available_sensors = set(c.split("_")[0] for c in acc_df.columns if "_acc_" in c)
+    print("Available sensors:", available_sensors)
+
+    sensor = "Waist" if "Waist" in list(available_sensors) else list(available_sensors)[0]
+    print("Using sensor:", sensor)
+
+    # Find this sensor's columns
+    sensor_cols = [c for c in acc_df.columns if c.startswith(sensor)]
+
+    print("Found sensor columns:", sensor_cols)
+
+    df_sensor = acc_df[["t_sec"] + sensor_cols].copy()
+
+    rename_map = {
+        f"{sensor}_acc_x": "acc_x",
+        f"{sensor}_acc_y": "acc_y",
+        f"{sensor}_acc_z": "acc_z",
+        f"{sensor}_gyro_x": "gyro_x",
+        f"{sensor}_gyro_y": "gyro_y",
+        f"{sensor}_gyro_z": "gyro_z",
+    }
+
+    df_sensor = acc_df[["t_sec"] + list(rename_map.keys())].rename(columns=rename_map)
+
+    print("Renamed columns:", df_sensor.columns.tolist())
+
+    print(df_sensor.head())
+    print(df_sensor.dtypes)
+
+    df_imu_128 = FC.resample_imu_d(df_sensor, target_sfreq=128.0)
+
+
+    #FoG ground truth
+    fog_events = [
+        (30.0, 35.0),
+        (80.0, 83.0),
+    ]
+
+    fog_labels = FC.build_window_labels(
+        df_imu_128=df_imu_128,
+        fog_events=fog_events
+    )
+    print("df_imu_128 columns:", df_imu_128.columns.tolist())
+    Plots.plot_fog_windows(
+        imu_df=df_imu_128,
+        labels=fog_labels,
+        sfreq=128
     )
 
-    print(f"Loaded {len(all_subjects_data)} subjects.")
-    app = Dashboard.build_dashboard_all_subjects(all_subjects_data)
-    app.run(debug=False, use_reloader=False, port=8050)
+
+
+
+
+
+
 
 # for subj_path in subject_dirs:
 #     subj_id = os.path.basename(subj_path)

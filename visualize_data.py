@@ -4,6 +4,7 @@ import requests
 import glob
 import os
 import datetime
+import numpy as np
 from datetime import *
 from kalman_filter import KalmanFilter
 from prep import Prep
@@ -94,6 +95,11 @@ if __name__ == "__main__":
         (30.0, 35.0),
         (80.0, 83.0),
     ]
+    # fog_events = [
+    #     (200, 600),
+    #     (900, 1300),
+    # ]
+
 
     fog_labels = FC.build_window_labels(
         df_imu_128=df_imu_128,
@@ -105,6 +111,16 @@ if __name__ == "__main__":
         labels=fog_labels,
         sfreq=128
     )
+    print(df_imu_128.head())
+    print(df_imu_128.describe())
+    print(np.unique(fog_labels, return_counts=True))
+
+    S = FC.build_S_matrix(df_imu_128)
+    X = FC.sliding_windows(S)
+
+    print("X shape:", X.shape)
+    print("y shape:", fog_labels.shape)
+
 
 
 

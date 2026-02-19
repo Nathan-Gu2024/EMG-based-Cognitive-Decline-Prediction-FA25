@@ -136,4 +136,35 @@ class FoG_Class:
 
         return y
     
+    
+    def sliding_windows(S, window_len=384, step=32):
+        """
+        S: (N, 6)
+        Returns X: (K, 384, 6)
+        """
+        N = S.shape[0]
+        K = (N - window_len) // step + 1
+
+        X = np.zeros((K, window_len, 6), dtype=np.float32)
+
+        for k in range(K):
+            s = k * step
+            e = s + window_len
+            X[k] = S[s:e]
+
+        return X
+    
+
+    def extract_features(X):
+        feats = []
+        for w in X:
+            f = []
+            f += w.mean(axis=0).tolist()
+            f += w.std(axis=0).tolist()
+            f += np.max(w, axis=0).tolist()
+            f += np.min(w, axis=0).tolist()
+            feats.append(f)
+        return np.array(feats)
+
+
 

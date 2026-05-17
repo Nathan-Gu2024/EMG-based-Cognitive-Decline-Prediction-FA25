@@ -13,6 +13,7 @@ import os
 import json
 import numpy as np
 import torch
+import argparse
 from torch.utils.data import DataLoader
 
 from FoG_CNN_class import FoG_Class as FC
@@ -23,9 +24,17 @@ import multiprocessing
 multiprocessing.set_start_method("spawn", force=True)
 
 if __name__ == "__main__":
-    RAW_ROOT      = "/Users/nathangu/Desktop/Pytorch/NT/t8j8v4hnm4-1/Raw"
-    FILTERED_ROOT = "/Users/nathangu/Desktop/Pytorch/NT/Filtered/Filtered Data"
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--raw_root', type=str, required=True, help="Path to raw data")
+    parser.add_argument('--filtered_root', type=str, required=True, help="Path to filtered data")
+    parser.add_argument('--save_dir', type=str, default='.', help="Where to save the .npy files")
+    args = parser.parse_args()
+
+    RAW_ROOT      = args.raw_root
+    FILTERED_ROOT = args.filtered_root
     SENSOR        = "Waist"
+
+
 
     # ── Load all subjects + tasks ─────────────────────────────────────────────
     print("Loading and aligning data...")
@@ -112,13 +121,17 @@ if __name__ == "__main__":
     print(f"Subjects: {[s['subject_id'] for s in subject_indices]}")
 
     # ── Save ──────────────────────────────────────────────────────────────────
-    np.save("X_windows_all_subjects.npy", X_combined)
-    np.save("y_windows_all_subjects.npy", y_combined)
+    # Update the save paths to use args.save_dir
+    os.makedirs(args.save_dir, exist_ok=True)
+    
+    np.save(os.path.join(args.save_dir, "X_windows_all_subjects.npy"), X_combined)
+    np.save(os.path.join(args.save_dir, "y_windows_all_subjects.npy"), y_combined)
 
-    with open("subject_indices.json", "w") as f:
+    with open(os.path.join(args.save_dir, "subject_indices.json"), "w") as f:
         json.dump(subject_indices, f, indent=2)
 
-    print("\nSaved X, y, and subject_indices.json")
+    print(f"\nSaved X, y, and subject_indices.json to {args.save_dir}")
+
 
     # ── Quick DataLoader test ─────────────────────────────────────────────────
     dataset = FoGDataset(X_combined, y_combined)
@@ -126,3 +139,5 @@ if __name__ == "__main__":
     xb, yb  = next(iter(loader))
     print(f"\nTest batch: X={xb.shape}, y={yb.shape}")
     print("Ready for training!")
+
+

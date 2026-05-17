@@ -16,6 +16,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import argparse
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import confusion_matrix, classification_report
 import matplotlib.pyplot as plt
@@ -270,15 +271,20 @@ def loso_cv(X, y, subject_indices,
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data_path', type=str, default='.', help="Folder containing the .npy files")
+    args = parser.parse_args()
+
     DEVICE  = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Device: {DEVICE}")
 
-    X = np.load("X_windows_all_subjects.npy")
-    y = np.load("y_windows_all_subjects.npy")
+    # Use args.data_path here
+    X = np.load(os.path.join(args.data_path, "X_windows_all_subjects.npy"))
+    y = np.load(os.path.join(args.data_path, "y_windows_all_subjects.npy"))
 
-    with open("subject_indices.json") as f:
+    with open(os.path.join(args.data_path, "subject_indices.json")) as f:
         subject_indices = json.load(f)
-
+    
     print(f"X: {X.shape}  y: {y.shape}")
     print(f"FoG (1): {(y==1).sum()} | NonFoG (0): {(y==0).sum()}")
     print(f"Subjects: {[s['subject_id'] for s in subject_indices]}")
@@ -326,3 +332,6 @@ if __name__ == "__main__":
     with open("loso_results.json", "w") as f:
         json.dump(save, f, indent=2)
     print("Saved loso_results.json and loso_confusion_matrix.png")
+
+
+

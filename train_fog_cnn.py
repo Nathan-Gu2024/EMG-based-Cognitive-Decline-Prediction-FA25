@@ -96,7 +96,7 @@ def train_epoch(model, loader, criterion, optimizer, scaler, device):
         optimizer.zero_grad(set_to_none=True)
 
         if scaler:
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 out  = model(X_batch)
                 loss = criterion(out, y_batch)
             scaler.scale(loss).backward()
@@ -134,25 +134,26 @@ def evaluate(model, loader, device):
 
 
 def metrics(y_true, y_pred):
-    cm = confusion_matrix(y_true, y_pred)
-
-    if len(np.unique(y_true)) == 2:
-        tn, fp, fn, tp = cm.ravel()
-        sens = tp / (tp + fn) if (tp + fn) > 0 else 0
-        spec = tn / (tn + fp) if (tn + fp) > 0 else 0
-        prec = tp / (tp + fp) if (tp + fp) > 0 else 0
-        f1   = 2*tp / (2*tp + fp + fn) if (2*tp + fp + fn) > 0 else 0
-        acc  = (tp + tn) / len(y_true)
-        return dict(sensitivity=sens, specificity=spec, precision=prec,
-                    f1=f1, accuracy=acc, confusion_matrix=cm,
-                    tp=int(tp), fp=int(fp), tn=int(tn), fn=int(fn))
-    else:
-        rep = classification_report(y_true, y_pred, output_dict=True)
-        return dict(accuracy=rep["accuracy"],
-                    macro_f1=rep["macro avg"]["f1-score"],
-                    confusion_matrix=cm)
-
-
+    # Force a 2x2 matrix for classes 0 and 1, preventing crashes if a class is missing
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+    
+    tn, fp, fn, tp = cm.ravel()
+    
+    sens = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    spec = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+    prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    f1   = 2*tp / (2*tp + fp + fn) if (2*tp + fp + fn) > 0 else 0.0
+    acc  = (tp + tn) / len(y_true) if len(y_true) > 0 else 0.0
+    
+    return dict(
+        sensitivity=sens, 
+        specificity=spec, 
+        precision=prec,
+        f1=f1, 
+        accuracy=acc, 
+        confusion_matrix=cm,
+        tp=int(tp), fp=int(fp), tn=int(tn), fn=int(fn)
+    )
 # ── LOSO Cross-Validation ─────────────────────────────────────────────────────
 
 def loso_cv(X, y, subject_indices,

@@ -17,107 +17,111 @@
 
 import pandas as pd
 import numpy as np
+from scipy import signal
 
 class FoG_Class:
     FOG, STOP, WALK = 1, 2, 3
 
+    # ── Resampling ────────────────────────────────────────────────────────────
+
     def resample_imu_d(df, target_sfreq=128.0):
         """
         Resample IMU dataframe to target sampling frequency.
-        Works with acc-only OR acc+gyro data.
+        Skips non-numeric columns (timestamp etc).
         """
         t = df["t_sec"].to_numpy()
         t_new = np.arange(t[0], t[-1], 1.0 / target_sfreq)
-
         out = {"t_sec": t_new}
 
         for col in df.columns:
             if col == "t_sec":
                 continue
-            out[col] = np.interp(t_new, t, df[col].to_numpy())
+            if df[col].dtype.kind in ['O', 'M', 'U']:
+                continue
+            try:
+                out[col] = np.interp(t_new, t, df[col].to_numpy())
+            except (TypeError, ValueError):
+                continue
 
         return pd.DataFrame(out)
-        
+
+    # ── Signal Matrix ─────────────────────────────────────────────────────────
+
     def build_S_matrix(df):
         """
-        Returns S ∈ R^{N x 6}
+        Returns S ∈ R^{N x 6}: raw acc + gyro (no fusion needed).
+        Converts raw ADC values to physical units:
+          acc  → g   (divide by 8192, assuming ±4g range / 16-bit)
+          gyro → deg/s (divide by 131, assuming ±250 dps range / 16-bit)
+        NOTE: Adjust ACC_SENS and GYRO_SENS if your sensor uses different ranges.
         """
-        return df[[
-            "acc_x", "acc_y", "acc_z",
-            "gyro_x", "gyro_y", "gyro_z"
-        ]].to_numpy(dtype=np.float32)
-    
+        ACC_SENS  = 8192.0   # LSB/g   — ±4g range, 16-bit  (8000 ADC ≈ 1g at rest confirms this)
+        GYRO_SENS = 131.0    # LSB/(deg/s) — ±250 dps range, 16-bit
 
-    def label_sliding_windows_multiclass(t_sec, fog_mask, stop_mask, sfreq=128, window_sec=3.0, overlap_sec=0.25):
-        W_l = int(window_sec * sfreq)
-        step = int(overlap_sec * sfreq)
-        K = (len(t_sec) - W_l) // step + 1
+        S = df[["acc_x", "acc_y", "acc_z",
+                "gyro_x", "gyro_y", "gyro_z"]].to_numpy(dtype=np.float32)
 
-        y = np.zeros(K, dtype=np.int64)
-        half = W_l // 2
+        S[:, 0:3] /= ACC_SENS   # acc channels → g
+        S[:, 3:6] /= GYRO_SENS  # gyro channels → deg/s
 
+        return S
+
+    # ── Per-window Z-score normalization ─────────────────────────────────────
+
+    def normalize_windows(X):
+        """
+        Per-window, per-channel z-score normalization.
+        X: (K, 384, 6) → same shape, each channel in each window has mean=0, std=1.
+        This is critical for CNN stability when channels have different scales.
+        """
+        mean = X.mean(axis=1, keepdims=True)   # (K, 1, 6)
+        std  = X.std(axis=1, keepdims=True)    # (K, 1, 6)
+        std  = np.where(std < 1e-8, 1e-8, std) # avoid divide-by-zero
+        return (X - mean) / std
+
+    # ── Sliding Windows ───────────────────────────────────────────────────────
+
+    def sliding_windows(S, window_len=384, step=32):
+        """
+        S: (N, 6) → X: (K, 384, 6)
+        """
+        N = S.shape[0]
+        K = (N - window_len) // step + 1
+        X = np.zeros((K, window_len, 6), dtype=np.float32)
         for k in range(K):
             s = k * step
-            e = s + W_l
-
-            fog_count  = fog_mask[s:e].sum()
-            stop_count = stop_mask[s:e].sum()
-
-            if fog_count >= half:
-                y[k] = FoG_Class.FOG
-            elif stop_count >= half:
-                y[k] = FoG_Class.STOP
-            else:
-                y[k] = FoG_Class.WALK
-
-        return y
-
-
-    def build_cnn_input_from_imu(df_imu):
-        """
-        df_imu: fused or raw IMU DataFrame for ONE sensor
-        """
-        df_128 = FoG_Class.resample_imu_df(df_imu, target_sfreq=128.0)
-        S = FoG_Class.build_S_matrix(df_128)          # (N, 6)
-        X = FoG_Class.sliding_windows(S)              # (K, 384, 6)
+            X[k] = S[s:s + window_len]
         return X
-    
+
+    # ── Labeling ─────────────────────────────────────────────────────────────
 
     def build_fog_mask(t_sec, fog_events):
         """
         t_sec: (N,) array of timestamps in seconds
         fog_events: list of (start_sec, end_sec)
-        Returns:
-            fog_mask: (N,) binary array
+        Returns fog_mask: (N,) binary array
         """
         fog_mask = np.zeros(len(t_sec), dtype=np.int8)
-
         for start, end in fog_events:
             fog_mask |= ((t_sec >= start) & (t_sec <= end)).astype(np.int8)
-
         return fog_mask
 
-    def label_sliding_windows(t_sec, fog_mask, sfreq=128, window_sec=3.0, overlap_sec=0.25, fog_class=1, nonfog_class=2):
+    def label_sliding_windows(t_sec, fog_mask, sfreq=128, window_sec=3.0,
+                               overlap_sec=0.25, fog_class=1, nonfog_class=0):
         """
-        Returns:
-            y: (K,) window labels
+        Returns y: (K,) window labels (0-indexed: 0=NonFoG, 1=FoG)
         """
-        W_l = int(window_sec * sfreq)     # 384
-        step = int(overlap_sec * sfreq)   # 32
-        N = len(t_sec)
-
-        K = (N - W_l) // step + 1
-        y = np.zeros(K, dtype=np.int64)
-
-        min_fog_samples = W_l // 2        # >= 1.5s
+        W_l  = int(window_sec * sfreq)     # 384
+        step = int(overlap_sec * sfreq)    # 32
+        N    = len(t_sec)
+        K    = (N - W_l) // step + 1
+        y    = np.zeros(K, dtype=np.int64)
+        min_fog_samples = W_l // 2         # ≥ 1.5s
 
         for k in range(K):
             start = k * step
-            end = start + W_l
-
-            fog_count = fog_mask[start:end].sum()
-
-            if fog_count >= min_fog_samples:
+            end   = start + W_l
+            if fog_mask[start:end].sum() >= min_fog_samples:
                 y[k] = fog_class
             else:
                 y[k] = nonfog_class
@@ -128,43 +132,21 @@ class FoG_Class:
         """
         df_imu_128: resampled IMU dataframe (128 Hz)
         fog_events: list of (start_sec, end_sec)
+        Returns y: (K,) with 0=NonFoG, 1=FoG
         """
-        t_sec = df_imu_128["t_sec"].to_numpy()
-
+        t_sec    = df_imu_128["t_sec"].to_numpy()
         fog_mask = FoG_Class.build_fog_mask(t_sec, fog_events)
-        y = FoG_Class.label_sliding_windows(t_sec, fog_mask)
-
+        y        = FoG_Class.label_sliding_windows(t_sec, fog_mask)
         return y
-    
-    
-    def sliding_windows(S, window_len=384, step=32):
-        """
-        S: (N, 6)
-        Returns X: (K, 384, 6)
-        """
-        N = S.shape[0]
-        K = (N - window_len) // step + 1
 
-        X = np.zeros((K, window_len, 6), dtype=np.float32)
-
-        for k in range(K):
-            s = k * step
-            e = s + window_len
-            X[k] = S[s:e]
-
-        return X
-    
+    # ── Feature extraction (for traditional ML baseline) ─────────────────────
 
     def extract_features(X):
         feats = []
         for w in X:
-            f = []
-            f += w.mean(axis=0).tolist()
+            f  = w.mean(axis=0).tolist()
             f += w.std(axis=0).tolist()
             f += np.max(w, axis=0).tolist()
             f += np.min(w, axis=0).tolist()
             feats.append(f)
         return np.array(feats)
-
-
-

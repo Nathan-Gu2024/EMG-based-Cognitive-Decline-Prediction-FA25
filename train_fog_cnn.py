@@ -284,7 +284,7 @@ def loso_cv(X, y, subject_indices,
                     f"Macro F1={m['f1']*100:.1f}% "
                     f"Acc={m['accuracy']*100:.1f}%")
             if wait >= patience:
-                print(f"  Early stop at epoch {epoch+1} (best val F1={best_f1*100:.1f}%)")
+                print(f"  Early stop at epoch {epoch+1}")                
                 break
 
         if best_state is not None:
@@ -297,11 +297,9 @@ def loso_cv(X, y, subject_indices,
         all_labels.extend(y_true)
 
         print(f"\n  → Test {test_subj}: "
-            f"Sens={m['sensitivity']*100:.1f}% "
-            f"Spec={m['specificity']*100:.1f}% "
-            f"F1={m['f1']*100:.1f}% "
-            f"Acc={m['accuracy']*100:.1f}%")
-
+              f"Macro F1={m['f1']*100:.1f}% "
+              f"Acc={m['accuracy']*100:.1f}%")
+        
     overall = metrics(np.array(all_labels), np.array(all_preds))
     results['overall'] = overall
     return results

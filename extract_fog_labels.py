@@ -172,29 +172,16 @@ def slice_raw_sensor_to_task(sensor_df: pd.DataFrame, task_df: pd.DataFrame) -> 
     sliced["t_sec"] = (sliced["timestamp"] - task_start).dt.total_seconds()
     return sliced
 
-
 # -- 5. PROCESS ALL SUBJECTS --------------------------------------------------
 
 def process_all_subjects(raw_root: str, filtered_root: str, sensor: str = "Waist") -> dict:
     """
     For every subject + task:
-      - Load raw sensor CSV (unfused acc+gyro) for chosen sensor
+      - Peek at a sensor to get the recording_date
       - Load filtered task .txt
-      - Align via absolute timestamps
+      - Find the highest priority sensor that actually overlaps with the task window
       - Extract fog_events as t_sec offsets from task start
       - Slice raw sensor data to task window
-
-    Returns:
-    {
-        "001": {
-            "task_1": {
-                "raw_sensor_df": DataFrame,    # sliced raw acc+gyro, t_sec zeroed at task start
-                                                # STILL NEEDS Prep.fuse_imu_data_vectorized()
-                "fog_events":    [(s, e), ...], # t_sec offsets from task start
-                "task_desc":     str
-            }, ...
-        }, ...
-    }
     """
     results = {}
 
@@ -211,41 +198,68 @@ def process_all_subjects(raw_root: str, filtered_root: str, sensor: str = "Waist
             print(f"[{subj_id}] No filtered folder found, skipping.")
             continue
 
-        # Find sensor CSV -- prefer chosen sensor, fall back to whatever exists
-        csv_path = os.path.join(raw_path, f"{sensor}.csv")
-        used_sensor = sensor
-        if not os.path.exists(csv_path):
-            for alt in SENSORS:
-                alt_path = os.path.join(raw_path, f"{alt}.csv")
-                if os.path.exists(alt_path):
-                    csv_path   = alt_path
-                    used_sensor = alt
-                    break
-            else:
-                print(f"[{subj_id}] No sensor CSV found, skipping.")
-                continue
+        # 1. PEEK at any available sensor just to get the recording date
+        recording_date = None
+        for alt in SENSORS:
+            alt_path = os.path.join(raw_path, f"{alt}.csv")
+            if os.path.exists(alt_path):
+                temp_df = load_raw_sensor_csv(alt_path)
+                recording_date = temp_df["timestamp"].iloc[0].date()
+                break
+        
+        if recording_date is None:
+            print(f"[{subj_id}] No sensor CSV found at all, skipping.")
+            continue
 
-        print(f"\n[{subj_id}] Loading {used_sensor}.csv ...")
-        raw_sensor_df = load_raw_sensor_csv(csv_path)
-
-        # Recording date comes from the sensor CSV itself -- no hardcoding needed
-        recording_date = raw_sensor_df["timestamp"].iloc[0].date()
-        midnight = datetime(recording_date.year, recording_date.month, recording_date.day)
-        raw_sensor_df["t_sec"] = (raw_sensor_df["timestamp"] - midnight).dt.total_seconds()
-
-        print(f"  Raw sensor: {len(raw_sensor_df):,} samples | "
-              f"{raw_sensor_df['timestamp'].iloc[0].strftime('%H:%M:%S')} -> "
-              f"{raw_sensor_df['timestamp'].iloc[-1].strftime('%H:%M:%S')} | "
-              f"date: {recording_date}")
-
+        print(f"\n[{subj_id}] Processing tasks (Date: {recording_date})...")
         task_files = sorted(glob.glob(os.path.join(filtered_path, "task_*.txt")))
         results[subj_id] = {}
+        
+        # Cache to avoid reloading the same massive CSV multiple times for different tasks
+        sensor_cache = {}
 
         for task_path in task_files:
             task_name = os.path.splitext(os.path.basename(task_path))[0]
             task_desc = TASK_NAMES.get(task_name, task_name)
 
+            # 2. Load the task using our peeked recording date
             task_df = load_filtered_txt(task_path, recording_date)
+            task_start = task_df["timestamp"].iloc[0]
+            task_end   = task_df["timestamp"].iloc[-1]
+
+            # 3. Find the best overlapping sensor for THIS task
+            search_order = [sensor] + [s for s in SENSORS if s != sensor]
+            raw_sensor_df = None
+            used_sensor = None
+            
+            for s_name in search_order:
+                csv_path = os.path.join(raw_path, f"{s_name}.csv")
+                if not os.path.exists(csv_path):
+                    continue
+                    
+                # Load into cache if not already there
+                if s_name not in sensor_cache:
+                    sensor_cache[s_name] = load_raw_sensor_csv(csv_path)
+                    
+                temp_df = sensor_cache[s_name]
+                raw_start = temp_df["timestamp"].iloc[0]
+                raw_end   = temp_df["timestamp"].iloc[-1]
+                
+                # Check actual temporal overlap!
+                if (task_start <= raw_end) and (task_end >= raw_start):
+                    raw_sensor_df = temp_df.copy()
+                    used_sensor = s_name
+                    break
+                else:
+                    print(f"  [Warning] {s_name} exists but timestamps do not overlap for {task_name}. Trying next fallback...")
+
+            if raw_sensor_df is None:
+                print(f"  [{task_name}] Skipping — no overlapping sensor data found for task window.")
+                continue
+
+            # 4. We found an overlapping sensor! Set up t_sec zeroed to midnight
+            midnight = datetime(recording_date.year, recording_date.month, recording_date.day)
+            raw_sensor_df["t_sec"] = (raw_sensor_df["timestamp"] - midnight).dt.total_seconds()
 
             # FoG events re-zeroed to task start
             task_start_sec  = task_df["t_sec"].iloc[0]
@@ -257,10 +271,9 @@ def process_all_subjects(raw_root: str, filtered_root: str, sensor: str = "Waist
             raw_sensor_task = slice_raw_sensor_to_task(raw_sensor_df, task_df)
 
             n_fog = sum(e - s for s, e in fog_events)
-            print(f"  {task_name}: {len(fog_events)} FoG events | "
+            print(f"  {task_name} (Used {used_sensor}): {len(fog_events)} FoG events | "
                   f"{n_fog:.1f}s FoG | "
-                  f"{len(raw_sensor_task):,} sensor samples | "
-                  f"{task_desc}")
+                  f"{len(raw_sensor_task):,} sensor samples")
 
             results[subj_id][task_name] = {
                 "raw_sensor_df": raw_sensor_task,  # UNFUSED - needs Prep.fuse_imu_data_vectorized()
@@ -269,7 +282,6 @@ def process_all_subjects(raw_root: str, filtered_root: str, sensor: str = "Waist
             }
 
     return results
-
 
 # -- 6. PLUG INTO YOUR EXISTING PIPELINE --------------------------------------
 

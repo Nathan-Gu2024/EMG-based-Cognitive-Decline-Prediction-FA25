@@ -10,8 +10,8 @@ import pandas as pd
 from datetime import datetime
 from extract_fog_labels import load_raw_sensor_csv, load_filtered_txt
 
-RAW_ROOT      = "/content/drive/MyDrive/t8j8vhnm4-1/Raw"
-FILTERED_ROOT = "/content/drive/MyDrive/Filtered_Data"
+# RAW_ROOT      = "/content/drive/MyDrive/t8j8vhnm4-1/Raw"
+# FILTERED_ROOT = "/content/drive/MyDrive/Filtered_Data"
 SENSOR        = "Waist"
 
 def diagnose_subject(subj_id: str):
@@ -77,8 +77,21 @@ def diagnose_subject(subj_id: str):
 
 
 if __name__ == "__main__":
-    # Diagnose subjects with known mismatches
-    problematic = ["003", "004", "005", "006", "007", "009", "010"]
-    
-    for subj_id in problematic:
-        diagnose_subject(subj_id)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--raw_root', type=str, required=True, help="Path to raw data")
+    parser.add_argument('--filtered_root', type=str, required=True, help="Path to filtered data")
+    args = parser.parse_args()
+
+    # Update global variables so the diagnose_subject function uses them
+    RAW_ROOT = args.raw_root
+    FILTERED_ROOT = args.filtered_root
+
+    # Get all subjects in the filtered folder
+    import os
+    if os.path.exists(FILTERED_ROOT):
+        subjects = sorted([d for d in os.listdir(FILTERED_ROOT) if not d.startswith('.')])
+        for subj in subjects:
+            diagnose_subject(subj)
+    else:
+        print(f"Could not find filtered root: {FILTERED_ROOT}")

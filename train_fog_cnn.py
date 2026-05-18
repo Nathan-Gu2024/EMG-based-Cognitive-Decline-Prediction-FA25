@@ -280,9 +280,10 @@ def loso_cv(X, y, subject_indices,
                 wait += 1
 
             if (epoch + 1) % 10 == 0:
-                print(f"\n  → Test {test_subj}: "
-                    f"Macro F1={m['f1']*100:.1f}% "
-                    f"Acc={m['accuracy']*100:.1f}%")
+                # print(f"\n  → Test {test_subj}: "
+                #     f"Macro F1={m['f1']*100:.1f}% "
+                #     f"Acc={m['accuracy']*100:.1f}%")
+                print(f"  Epoch {epoch+1:02d}/{epochs} | Tr Loss: {tr_loss:.4f} | Tr Acc: {tr_acc:.1f}% | Val F1: {val_f1*100:.1f}%")
             if wait >= patience:
                 print(f"  Early stop at epoch {epoch+1}")                
                 break

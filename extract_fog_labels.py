@@ -171,7 +171,7 @@ def slice_raw_sensor_to_task(sensor_df: pd.DataFrame, task_df: pd.DataFrame) -> 
 
     sliced["t_sec"] = (sliced["timestamp"] - task_start).dt.total_seconds()
     return sliced
-
+ 
 # -- 5. PROCESS ALL SUBJECTS --------------------------------------------------
 
 def process_all_subjects(raw_root: str, filtered_root: str, sensor: str = "Waist") -> dict:

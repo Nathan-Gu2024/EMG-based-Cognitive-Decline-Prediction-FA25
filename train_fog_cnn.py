@@ -287,8 +287,8 @@ def loso_cv(X, y, subject_indices,
                 print(f"  Early stop at epoch {epoch+1} (best val F1={best_f1*100:.1f}%)")
                 break
 
-        if best_state:
-            model.load_state_dict(best_state)
+            if best_state:
+                model.load_state_dict(best_state)
 
         y_pred, y_true = evaluate(model, test_loader, device)
         m = metrics(y_true, y_pred)
@@ -297,10 +297,10 @@ def loso_cv(X, y, subject_indices,
         all_labels.extend(y_true)
 
         print(f"\n  → Test {test_subj}: "
-              f"Sens={m['sensitivity']*100:.1f}% "
-              f"Spec={m['specificity']*100:.1f}% "
-              f"F1={m['f1']*100:.1f}% "
-              f"Acc={m['accuracy']*100:.1f}%")
+            f"Sens={m['sensitivity']*100:.1f}% "
+            f"Spec={m['specificity']*100:.1f}% "
+            f"F1={m['f1']*100:.1f}% "
+            f"Acc={m['accuracy']*100:.1f}%")
 
     overall = metrics(np.array(all_labels), np.array(all_preds))
     results['overall'] = overall

@@ -109,35 +109,44 @@ if __name__ == "__main__":
     X_combined = np.concatenate(all_X, axis=0)
     y_combined = np.concatenate(all_y, axis=0)
 
-    print(f"\n{'='*60}")
-    print(f"COMBINED DATASET")
-    print(f"{'='*60}")
-    print(f"X: {X_combined.shape}")
-    print(f"y: {y_combined.shape}")
-    print(f"FoG (1): {(y_combined == 1).sum()} ({100*(y_combined==1).mean():.1f}%)")
-    print(f"NonFoG (0): {(y_combined == 0).sum()} ({100*(y_combined==0).mean():.1f}%)")
-    print(f"NaNs: {np.isnan(X_combined).any()}")
-    print(f"Infs: {np.isinf(X_combined).any()}")
-    print(f"Subjects: {[s['subject_id'] for s in subject_indices]}")
+    # ── 1. Apply Subject-Level Normalization ──
+    print("Applying subject-level normalization...")
+    X_norm = X_combined.copy()
+    for subj in subject_indices:
+        s, e = subj['start_idx'], subj['end_idx']
+        subj_data = X_combined[s:e]
+        mean = subj_data.mean(axis=(0,1), keepdims=True)  
+        std  = subj_data.std(axis=(0,1),  keepdims=True)  
+        std  = np.where(std < 1e-8, 1e-8, std)
+        X_norm[s:e] = (subj_data - mean) / std
 
-    # ── Save ──────────────────────────────────────────────────────────────────
-    # Update the save paths to use args.save_dir
-    os.makedirs(args.save_dir, exist_ok=True)
+    # ── 2. Add Pre-FoG Class (3-Class Labels) ──
+    print("Applying Pre-FoG 3-class labeling...")
+    PRE_FOG_STEPS = 8 # ~2 seconds
+    y_new = np.zeros_like(y_combined)
     
-    np.save(os.path.join(args.save_dir, "X_windows_all_subjects.npy"), X_combined)
-    np.save(os.path.join(args.save_dir, "y_windows_all_subjects.npy"), y_combined)
+    for subj in subject_indices:
+        s, e = subj['start_idx'], subj['end_idx']
+        y_subj = y_combined[s:e]
+        y_subj_new = np.zeros_like(y_subj)
+        y_subj_new[y_subj == 1] = 2   # FoG -> class 2
 
-    with open(os.path.join(args.save_dir, "subject_indices.json"), "w") as f:
+        # Find onsets
+        diff = np.diff(y_subj, prepend=0)
+        onsets = np.where(diff == 1)[0]
+        
+        for onset in onsets:
+            start = max(0, onset - PRE_FOG_STEPS)
+            for i in range(start, onset):
+                if y_subj_new[i] == 0:
+                    y_subj_new[i] = 1 # Pre-FoG -> class 1
+        
+        y_new[s:e] = y_subj_new
+
+    # ── Save the updated arrays ──
+    np.save("X_windows_all_subjects.npy", X_norm)
+    np.save("y_windows_all_subjects.npy", y_new)
+    
+    with open("subject_indices.json", "w") as f:
         json.dump(subject_indices, f, indent=2)
-
-    print(f"\nSaved X, y, and subject_indices.json to {args.save_dir}")
-
-
-    # ── Quick DataLoader test ─────────────────────────────────────────────────
-    dataset = FoGDataset(X_combined, y_combined)
-    loader  = DataLoader(dataset, batch_size=64, shuffle=True, num_workers=2)
-    xb, yb  = next(iter(loader))
-    print(f"\nTest batch: X={xb.shape}, y={yb.shape}")
-    print("Ready for training!")
-
 

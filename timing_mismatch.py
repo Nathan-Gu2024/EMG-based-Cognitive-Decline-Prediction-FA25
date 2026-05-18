@@ -10,8 +10,8 @@ import pandas as pd
 from datetime import datetime
 from extract_fog_labels import load_raw_sensor_csv, load_filtered_txt
 
-RAW_ROOT      = "/Users/nathangu/Desktop/Pytorch/NT/t8j8v4hnm4-1/Raw"
-FILTERED_ROOT = "/Users/nathangu/Desktop/Pytorch/NT/Filtered/Filtered Data"
+RAW_ROOT      = "/content/drive/MyDrive/t8j8vhnm4-1/Raw"
+FILTERED_ROOT = "/content/drive/MyDrive/Filtered/Filtered Data"
 SENSOR        = "Waist"
 
 def diagnose_subject(subj_id: str):

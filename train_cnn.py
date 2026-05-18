@@ -144,9 +144,10 @@ if __name__ == "__main__":
         y_new[s:e] = y_subj_new
 
     # ── Save the updated arrays ──
-    np.save("X_windows_all_subjects.npy", X_norm)
-    np.save("y_windows_all_subjects.npy", y_new)
+    save_dir = args.save_dir if hasattr(args, 'save_dir') else '.'
     
-    with open("subject_indices.json", "w") as f:
+    np.save(os.path.join(save_dir, "X_windows_all_subjects.npy"), X_norm)
+    np.save(os.path.join(save_dir, "y_windows_all_subjects.npy"), y_new)
+    
+    with open(os.path.join(save_dir, "subject_indices.json"), "w") as f:
         json.dump(subject_indices, f, indent=2)
-

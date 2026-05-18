@@ -351,9 +351,9 @@ if __name__ == "__main__":
     
     # Print the scikit-learn classification report
     print(classification_report(all_y_true, all_y_pred, 
+                                labels=[0, 1, 2],
                                 target_names=["Non-FoG", "Pre-FoG", "FoG"], 
                                 digits=4, zero_division=0))
-
     # Confusion matrix (3x3)
     plt.figure(figsize=(7, 6))
     sns.heatmap(ov['confusion_matrix'], annot=True, fmt='d', cmap='Blues',

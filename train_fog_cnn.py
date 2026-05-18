@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import confusion_matrix, classification_report
 import matplotlib.pyplot as plt
 import seaborn as sns
-
+from sklearn.metrics import f1_score, accuracy_score, confusion_matrix, classification_report
 
 import os
 import json
@@ -62,7 +62,7 @@ class ConvBlock(nn.Module):
         self.skip = nn.Conv1d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
 
     def forward(self, x):
-        out = self.drop(self.relu(self.bn(self.conv(x))))
+        self.drop(self.relu(self.bn(self.conv(x))))
         return self.relu(out + self.skip(x))
 
 class TCNBlock(nn.Module):
@@ -171,25 +171,19 @@ def evaluate(model, loader, device):
 
 
 def metrics(y_true, y_pred):
-    # Force a 2x2 matrix for classes 0 and 1, preventing crashes if a class is missing
-    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+    # Use labels [0, 1, 2] for 3 classes
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1, 2])
     
-    tn, fp, fn, tp = cm.ravel()
-    
-    sens = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    spec = tn / (tn + fp) if (tn + fp) > 0 else 0.0
-    prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-    f1   = 2*tp / (2*tp + fp + fn) if (2*tp + fp + fn) > 0 else 0.0
-    acc  = (tp + tn) / len(y_true) if len(y_true) > 0 else 0.0
+    # Calculate Macro F1 for early stopping
+    f1_macro = f1_score(y_true, y_pred, average='macro', zero_division=0)
+    acc = accuracy_score(y_true, y_pred)
     
     return dict(
-        sensitivity=sens, 
-        specificity=spec, 
-        precision=prec,
-        f1=f1, 
+        f1=f1_macro, 
         accuracy=acc, 
         confusion_matrix=cm,
-        tp=int(tp), fp=int(fp), tn=int(tn), fn=int(fn)
+        y_true=y_true, # Pass through for the final overall report
+        y_pred=y_pred
     )
 # ── LOSO Cross-Validation ─────────────────────────────────────────────────────
 
@@ -286,12 +280,9 @@ def loso_cv(X, y, subject_indices,
                 wait += 1
 
             if (epoch + 1) % 10 == 0:
-                print(f"  Ep {epoch+1:3d} | "
-                      f"Loss={tr_loss:.4f} Acc={tr_acc:.1f}% | "
-                      f"Val F1={val_f1*100:.1f}% "
-                      f"Sens={vm.get('sensitivity',0)*100:.1f}% "
-                      f"Spec={vm.get('specificity',0)*100:.1f}%")
-
+                print(f"\n  → Test {test_subj}: "
+                    f"Macro F1={m['f1']*100:.1f}% "
+                    f"Acc={m['accuracy']*100:.1f}%")
             if wait >= patience:
                 print(f"  Early stop at epoch {epoch+1} (best val F1={best_f1*100:.1f}%)")
                 break
@@ -338,7 +329,7 @@ if __name__ == "__main__":
     print(f"Subjects: {[s['subject_id'] for s in subject_indices]}")
 
     # Safety check — labels should already be 0/1
-    assert set(np.unique(y)).issubset({0, 1}), f"Unexpected labels: {np.unique(y)}"
+    assert set(np.unique(y)).issubset({0, 1, 2}), f"Unexpected labels: {np.unique(y)}"
 
     results = loso_cv(
         X, y,
@@ -352,37 +343,40 @@ if __name__ == "__main__":
     )
 
     print("\n" + "="*70)
-    print("OVERALL LOSO RESULTS")
+    print("OVERALL 3-CLASS LOSO RESULTS")
     print("="*70)
+    
     ov = results['overall']
-    print(f"Sensitivity : {ov['sensitivity']*100:.2f}%")
-    print(f"Specificity : {ov['specificity']*100:.2f}%")
-    print(f"Precision   : {ov['precision']*100:.2f}%")
-    print(f"F1          : {ov['f1']*100:.2f}%")
-    print(f"Accuracy    : {ov['accuracy']*100:.2f}%")
-    print(f"TP={ov['tp']}  FP={ov['fp']}  FN={ov['fn']}  TN={ov['tn']}")
+    all_y_true = ov['y_true']
+    all_y_pred = ov['y_pred']
+    
+    # Print the scikit-learn classification report
+    print(classification_report(all_y_true, all_y_pred, 
+                                target_names=["Non-FoG", "Pre-FoG", "FoG"], 
+                                digits=4, zero_division=0))
 
-    # Confusion matrix
-    plt.figure(figsize=(6, 5))
+    # Confusion matrix (3x3)
+    plt.figure(figsize=(7, 6))
     sns.heatmap(ov['confusion_matrix'], annot=True, fmt='d', cmap='Blues',
-                xticklabels=["NonFoG", "FoG"], yticklabels=["NonFoG", "FoG"])
-    plt.title("LOSO Overall Confusion Matrix")
-    plt.ylabel("True")
-    plt.xlabel("Predicted")
+                xticklabels=["Non-FoG", "Pre-FoG", "FoG"], 
+                yticklabels=["Non-FoG", "Pre-FoG", "FoG"])
+    plt.title("LOSO Overall 3-Class Confusion Matrix")
+    plt.ylabel("True Label")
+    plt.xlabel("Predicted Label")
     plt.tight_layout()
     
-    # 1. Update the save path for the image
-    cm_save_path = os.path.join(args.data_path, "loso_confusion_matrix.png")
+    # Update the save path for the image
+    cm_save_path = os.path.join(args.data_path, "loso_confusion_matrix_3class.png")
     plt.savefig(cm_save_path, dpi=300)
     plt.show()
 
-    # Save final dictionary locally
+    # Save final dictionary locally (exclude massive raw arrays to save space)
     save_data = {}
     for k, v in results.items():
-        save_data[k] = {key: val.tolist() if isinstance(val, np.ndarray) else val for key, val in v.items()}
+        save_data[k] = {key: val.tolist() if isinstance(val, np.ndarray) else val 
+                        for key, val in v.items() if key not in ['y_true', 'y_pred']}
 
-    # 2. Update the save path for the JSON
-    json_save_path = os.path.join(args.data_path, "loso_results.json")
+    json_save_path = os.path.join(args.data_path, "loso_results_3class.json")
     with open(json_save_path, "w") as f:
         json.dump(save_data, f, indent=2)
 

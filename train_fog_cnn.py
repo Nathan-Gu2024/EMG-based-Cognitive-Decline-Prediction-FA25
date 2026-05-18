@@ -28,7 +28,7 @@ import json
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.nn.utils import weight_norm
+from torch.nn.utils.parametrizations import weight_norm
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import classification_report
@@ -62,7 +62,7 @@ class ConvBlock(nn.Module):
         self.skip = nn.Conv1d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
 
     def forward(self, x):
-        self.drop(self.relu(self.bn(self.conv(x))))
+        out = self.drop(self.relu(self.bn(self.conv(x))))
         return self.relu(out + self.skip(x))
 
 class TCNBlock(nn.Module):
@@ -199,8 +199,8 @@ def loso_cv(X, y, subject_indices,
     X_t = torch.tensor(X, dtype=torch.float32).transpose(1, 2)
     y_t = torch.tensor(y, dtype=torch.long)
 
-    scaler = torch.cuda.amp.GradScaler() if device == 'cuda' else None
-
+    scaler = torch.amp.GradScaler('cuda') if device == 'cuda' else None
+    
     all_preds, all_labels = [], []
     results = {}
 

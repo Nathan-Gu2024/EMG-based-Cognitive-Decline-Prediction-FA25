@@ -11,7 +11,7 @@ from datetime import datetime
 from extract_fog_labels import load_raw_sensor_csv, load_filtered_txt
 
 RAW_ROOT      = "/content/drive/MyDrive/t8j8vhnm4-1/Raw"
-FILTERED_ROOT = "/content/drive/MyDrive/Filtered/Filtered Data"
+FILTERED_ROOT = "/content/drive/MyDrive/Filtered_Data"
 SENSOR        = "Waist"
 
 def diagnose_subject(subj_id: str):

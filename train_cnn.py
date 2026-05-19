@@ -4,8 +4,9 @@ train_cnn.py
 Preprocessing pipeline fixes:
 - Skips fusion step entirely (pitch/roll/yaw not used by CNN)
 - Converts raw ADC values to physical units in build_S_matrix
-- Applies per-window z-score normalization
-- Labels are already 0-indexed (0=NonFoG, 1=FoG)
+- Removes per-window z-score normalization to avoid double-normalization noise
+- Applies spike clipping and robust subject-level scaling (Median + IQR)
+- Drops Pre-FoG 3-class labeling to return to a clean binary task
 - Removes DEBUG prints
 """
 
@@ -34,8 +35,6 @@ if __name__ == "__main__":
     FILTERED_ROOT = args.filtered_root
     SENSOR        = "Waist"
 
-
-
     # ── Load all subjects + tasks ─────────────────────────────────────────────
     print("Loading and aligning data...")
     all_data = process_all_subjects(RAW_ROOT, FILTERED_ROOT, sensor=SENSOR)
@@ -60,7 +59,6 @@ if __name__ == "__main__":
                 continue
 
             # Step 1: Resample raw acc+gyro to 128 Hz
-            # NOTE: No fusion needed — CNN uses acc+gyro directly, not pitch/roll/yaw
             df_128 = FC.resample_imu_d(raw_sensor_df, target_sfreq=128.0)
 
             # Step 2: Build signal matrix (converts ADC → physical units internally)
@@ -69,8 +67,9 @@ if __name__ == "__main__":
             # Step 3: Sliding windows
             X = FC.sliding_windows(S)       # (K, 384, 6)
 
-            # Step 4: Per-window z-score normalization
-            X = FC.normalize_windows(X)     # (K, 384, 6) mean=0, std=1 per channel per window
+            # Step 4: Per-window z-score normalization 
+            # FIX: Removed to keep raw window values intact and avoid double-normalization noise
+            # X = FC.normalize_windows(X)     
 
             # Step 5: Build labels (0=NonFoG, 1=FoG)
             y = FC.build_window_labels(df_128, fog_events)
@@ -109,45 +108,44 @@ if __name__ == "__main__":
     X_combined = np.concatenate(all_X, axis=0)
     y_combined = np.concatenate(all_y, axis=0)
 
-    # ── 1. Apply Subject-Level Normalization ──
-    print("Applying subject-level normalization...")
+    # ── 1. Apply Robust Subject-Level Scaling with Spike Clipping ──
+    print("\nApplying spike clipping and robust subject-level scaling (Median + IQR)...")
     X_norm = X_combined.copy()
     for subj in subject_indices:
         s, e = subj['start_idx'], subj['end_idx']
-        subj_data = X_combined[s:e]
-        mean = subj_data.mean(axis=(0,1), keepdims=True)  
-        std  = subj_data.std(axis=(0,1),  keepdims=True)  
-        std  = np.where(std < 1e-8, 1e-8, std)
-        X_norm[s:e] = (subj_data - mean) / std
-
-    # ── 2. Add Pre-FoG Class (3-Class Labels) ──
-    print("Applying Pre-FoG 3-class labeling...")
-    PRE_FOG_STEPS = 12 # ~2 seconds; changed to 12 for ~3 seconds for larger window
-    y_new = np.zeros_like(y_combined)
-    
-    for subj in subject_indices:
-        s, e = subj['start_idx'], subj['end_idx']
-        y_subj = y_combined[s:e]
-        y_subj_new = np.zeros_like(y_subj)
-        y_subj_new[y_subj == 1] = 2   # FoG -> class 2
-
-        # Find onsets
-        diff = np.diff(y_subj, prepend=0)
-        onsets = np.where(diff == 1)[0]
+        subj_data = X_combined[s:e].copy()
         
-        for onset in onsets:
-            start = max(0, onset - PRE_FOG_STEPS)
-            for i in range(start, onset):
-                if y_subj_new[i] == 0:
-                    y_subj_new[i] = 1 # Pre-FoG -> class 1
+        # FIX: Clip spikes to the 1st and 99th percentiles per channel for this specific subject
+        p1 = np.percentile(subj_data, 1, axis=(0,1), keepdims=True)
+        p99 = np.percentile(subj_data, 99, axis=(0,1), keepdims=True)
+        subj_data = np.clip(subj_data, p1, p99)
         
-        y_new[s:e] = y_subj_new
+        # FIX: Compute robust scaling parameters on the clipped data
+        median = np.median(subj_data, axis=(0,1), keepdims=True)
+        q25 = np.percentile(subj_data, 25, axis=(0,1), keepdims=True)
+        q75 = np.percentile(subj_data, 75, axis=(0,1), keepdims=True)
+        iqr = q75 - q25
+        
+        # Prevent division by zero if a sensor channel remains completely flat
+        iqr = np.where(iqr < 1e-8, 1e-8, iqr)
+        
+        # Apply scaling
+        X_norm[s:e] = (subj_data - median) / iqr
+
+    # ── 2. Drop Pre-FoG Class (Reverted completely to clean Binary Setup) ──
+    print("Dropping Pre-FoG class entirely to preserve clean binary distribution...")
+    # y_combined is already beautifully formatted as 0=NonFoG, 1=FoG.
+    # We no longer expand or alter it into 3 classes.
 
     # ── Save the updated arrays ──
     save_dir = args.save_dir if hasattr(args, 'save_dir') else '.'
     
     np.save(os.path.join(save_dir, "X_windows_all_subjects.npy"), X_norm)
-    np.save(os.path.join(save_dir, "y_windows_all_subjects.npy"), y_new)
+    np.save(os.path.join(save_dir, "y_windows_all_subjects.npy"), y_combined)
     
     with open(os.path.join(save_dir, "subject_indices.json"), "w") as f:
         json.dump(subject_indices, f, indent=2)
+        
+    print(f"\nSuccessfully generated cleaner, outlier-resistant binary matrices:")
+    print(f"  - X shape: {X_norm.shape}")
+    print(f"  - y shape: {y_combined.shape}")

@@ -122,7 +122,7 @@ if __name__ == "__main__":
 
     # ── 2. Add Pre-FoG Class (3-Class Labels) ──
     print("Applying Pre-FoG 3-class labeling...")
-    PRE_FOG_STEPS = 8 # ~2 seconds
+    PRE_FOG_STEPS = 12 # ~2 seconds; changed to 12 for ~3 seconds for larger window
     y_new = np.zeros_like(y_combined)
     
     for subj in subject_indices:

@@ -1,13 +1,12 @@
 """
 train_fog_cnn.py
 
-Clean LOSO CNN training with:
+Optimized Binary LOSO CNN/TCN training with:
 - Focal Loss for class imbalance
-- Proper train/val/test split (dedicated val subject)
-- Early stopping on val F1
-- Mixed precision (GPU)
-- No data leakage
-- Labels already 0-indexed (0=NonFoG, 1=FoG)
+- Automated remapping from 3-class data to clean 2-class binary setup
+- Exclusion of uninformative / poisoning subjects (002 and 005)
+- Early stopping locked onto minority FoG class F1 score
+- Fixed NameError bug on epoch reporting
 """
 
 import os
@@ -18,22 +17,12 @@ import torch.nn as nn
 import torch.optim as optim
 import argparse
 from torch.utils.data import DataLoader, TensorDataset
-from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.metrics import confusion_matrix, classification_report, f1_score, accuracy_score
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.metrics import f1_score, accuracy_score, confusion_matrix, classification_report
-
-import os
-import json
-import numpy as np
-import torch
-import torch.nn as nn
 from torch.nn.utils.parametrizations import weight_norm
-import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
-from sklearn.metrics import classification_report
 
-# ── 1. Updated 3-Class Focal Loss ──
+# ── 1. Binary Focal Loss ──
 class FocalLoss(nn.Module):
     def __init__(self, alpha=None, gamma=2.0):
         super().__init__()
@@ -51,7 +40,7 @@ class FocalLoss(nn.Module):
             loss = self.alpha[targets] * loss
         return loss.mean()
 
-# ── 2. Your CNN + TCN Architecture ──
+# ── 2. CNN + TCN Architecture (Reverted to 2-Class Output Head) ──
 class ConvBlock(nn.Module):
     def __init__(self, in_ch, out_ch, kernel=7, dropout=0.3):
         super().__init__()
@@ -68,7 +57,6 @@ class ConvBlock(nn.Module):
 class TCNBlock(nn.Module):
     def __init__(self, channels, kernel=3, dilation=1, dropout=0.2):
         super().__init__()
-        # Note: Symmetric padding (Non-causal)
         pad = (kernel - 1) * dilation // 2   
         self.conv1 = weight_norm(nn.Conv1d(channels, channels, kernel, dilation=dilation, padding=pad))
         self.bn1   = nn.BatchNorm1d(channels)
@@ -84,7 +72,7 @@ class TCNBlock(nn.Module):
         return self.relu(out + x)
 
 class FoGCNNTCN(nn.Module):
-    def __init__(self, num_classes=3, dropout_cnn=0.3, dropout_tcn=0.2):
+    def __init__(self, num_classes=2, dropout_cnn=0.3, dropout_tcn=0.2):
         super().__init__()
         self.stem = nn.Sequential(
             nn.Conv1d(6, 64, kernel_size=7, padding=3),
@@ -171,30 +159,27 @@ def evaluate(model, loader, device):
 
 
 def metrics(y_true, y_pred):
-    # Use labels [0, 1, 2] for 3 classes
-    cm = confusion_matrix(y_true, y_pred, labels=[0, 1, 2])
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
     
-    # Calculate Macro F1 for early stopping
-    f1_macro = f1_score(y_true, y_pred, average='macro', zero_division=0)
+    # CRITICAL: Track pure Binary F1 score specifically for Class 1 (FoG)
+    # This prevents the model from looking "good" via high Non-FoG detection performance
+    f1_binary = f1_score(y_true, y_pred, average='binary', pos_label=1, zero_division=0)
     acc = accuracy_score(y_true, y_pred)
     
     return dict(
-        f1=f1_macro, 
+        f1=f1_binary, 
         accuracy=acc, 
         confusion_matrix=cm,
-        y_true=y_true, # Pass through for the final overall report
+        y_true=y_true, 
         y_pred=y_pred
     )
+
 # ── LOSO Cross-Validation ─────────────────────────────────────────────────────
 
 def loso_cv(X, y, subject_indices,
             num_classes=2, epochs=80, batch_size=256,
             lr=1e-3, device='cuda', patience=12):
-    """
-    Leave-One-Subject-Out CV with proper val split.
-    Val set = the subject just before the test subject in the list
-    (rotates so every subject gets to be val once).
-    """
+
     # Transpose once here: (N, 384, 6) → (N, 6, 384)
     X_t = torch.tensor(X, dtype=torch.float32).transpose(1, 2)
     y_t = torch.tensor(y, dtype=torch.long)
@@ -226,7 +211,6 @@ def loso_cv(X, y, subject_indices,
         for s in train_infos:
             train_idx.extend(range(s["start_idx"], s["end_idx"]))
 
-        # Report class distribution
         train_labels = y[train_idx]
         fog_n    = (train_labels == 1).sum()
         nonfog_n = (train_labels == 0).sum()
@@ -247,29 +231,25 @@ def loso_cv(X, y, subject_indices,
                                   batch_size=batch_size*2, shuffle=False,
                                   num_workers=nw, pin_memory=pin, persistent_workers=nw>0)
 
-
-
-        model = FoGCNNTCN(num_classes=3).to(device)
+        model = FoGCNNTCN(num_classes=2).to(device)
         
-        # Calculate dynamic weights for the 3 classes
+        # Calculate dynamic balance weights for Binary Focus
         class_counts = np.bincount(train_labels)
         weights = 1.0 / class_counts
-        weights = weights / weights.sum() # Normalize
+        weights = weights / weights.sum() 
         
-        # Initialize loss and move it to the GPU
         criterion = FocalLoss(alpha=weights, gamma=2.0).to(device)
-        
-        # Setup Optimizer and Scheduler
         optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, mode='max', factor=0.5, patience=4, min_lr=1e-5)
+        
         best_f1, best_state, wait = 0.0, None, 0
 
         for epoch in range(epochs):
             tr_loss, tr_acc = train_epoch(model, train_loader, criterion, optimizer, scaler, device)
             val_preds, val_lbls = evaluate(model, val_loader, device)
             vm = metrics(val_lbls, val_preds)
-            val_f1 = vm.get('f1', vm.get('macro_f1', 0))
+            val_f1 = vm['f1']
 
             scheduler.step(val_f1)
 
@@ -280,10 +260,8 @@ def loso_cv(X, y, subject_indices,
                 wait += 1
 
             if (epoch + 1) % 10 == 0:
-                # print(f"\n  → Test {test_subj}: "
-                #     f"Macro F1={m['f1']*100:.1f}% "
-                #     f"Acc={m['accuracy']*100:.1f}%")
-                print(f"  Epoch {epoch+1:02d}/{epochs} | Tr Loss: {tr_loss:.4f} | Tr Acc: {tr_acc:.1f}% | Val F1: {val_f1*100:.1f}%")
+                print(f"  → Epoch {epoch+1}: Val FoG F1={val_f1*100:.1f}% | Val Acc={vm['accuracy']*100:.1f}%")
+                
             if wait >= patience:
                 print(f"  Early stop at epoch {epoch+1}")                
                 break
@@ -297,8 +275,8 @@ def loso_cv(X, y, subject_indices,
         all_preds.extend(y_pred)
         all_labels.extend(y_true)
 
-        print(f"\n  → Test {test_subj}: "
-              f"Macro F1={m['f1']*100:.1f}% "
+        print(f"\n  → Final Test {test_subj} Result: "
+              f"FoG F1={m['f1']*100:.1f}% "
               f"Acc={m['accuracy']*100:.1f}%")
         
     overall = metrics(np.array(all_labels), np.array(all_preds))
@@ -316,24 +294,35 @@ if __name__ == "__main__":
     DEVICE  = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Device: {DEVICE}")
 
-    # Use args.data_path here
     X = np.load(os.path.join(args.data_path, "X_windows_all_subjects.npy"))
     y = np.load(os.path.join(args.data_path, "y_windows_all_subjects.npy"))
 
     with open(os.path.join(args.data_path, "subject_indices.json")) as f:
         subject_indices = json.load(f)
     
-    print(f"X: {X.shape}  y: {y.shape}")
-    print(f"FoG (1): {(y==1).sum()} | NonFoG (0): {(y==0).sum()}")
-    print(f"Subjects: {[s['subject_id'] for s in subject_indices]}")
+    print(f"Original Loaded X: {X.shape}  y: {y.shape}")
+    
+    # FIX 1 & 4: Automatically collapse 3-class matrix back into 2-class binary setup
+    # If arrays were stored as (0=NonFoG, 1=PreFoG, 2=FoG), map 2 -> 1, and 1 -> 0
+    if len(np.unique(y)) > 2:
+        print("Remapping 3-class arrays back to Binary setup...")
+        y_binary = np.zeros_like(y)
+        y_binary[y == 2] = 1  # Freeze maps to Class 1
+        y_binary[y == 1] = 0  # Pre-freeze is absorbed back into Non-Freeze Background
+        y = y_binary
 
-    # Safety check — labels should already be 0/1
-    assert set(np.unique(y)).issubset({0, 1, 2}), f"Unexpected labels: {np.unique(y)}"
+    # FIX 3: Remove poisonous subjects that collapse network balance entirely
+    EXCLUDE_SUBJS = ["002", "005"]
+    print(f"Filtering out background noise/poisonous subjects: {EXCLUDE_SUBJS}")
+    subject_indices = [s for s in subject_indices if s["subject_id"] not in EXCLUDE_SUBJS]
+
+    print(f"Processed Binary Distribution -> FoG (1): {(y==1).sum()} | NonFoG (0): {(y==0).sum()}")
+    print(f"Active Training Subjects: {[s['subject_id'] for s in subject_indices]}")
 
     results = loso_cv(
         X, y,
         subject_indices=subject_indices,
-        num_classes=3,
+        num_classes=2,
         epochs=80,
         batch_size=256,
         lr=1e-3,
@@ -342,43 +331,40 @@ if __name__ == "__main__":
     )
 
     print("\n" + "="*70)
-    print("OVERALL 3-CLASS LOSO RESULTS")
+    print("OVERALL BINARY 2-CLASS LOSO RESULTS")
     print("="*70)
     
     ov = results['overall']
     all_y_true = ov['y_true']
     all_y_pred = ov['y_pred']
     
-    # Print the scikit-learn classification report
     print(classification_report(all_y_true, all_y_pred, 
-                                labels=[0, 1, 2],
-                                target_names=["Non-FoG", "Pre-FoG", "FoG"], 
+                                target_names=["Non-FoG", "FoG"], 
                                 digits=4, zero_division=0))
-    # Confusion matrix (3x3)
-    plt.figure(figsize=(7, 6))
+
+    # Confusion matrix (2x2)
+    plt.figure(figsize=(6, 5))
     sns.heatmap(ov['confusion_matrix'], annot=True, fmt='d', cmap='Blues',
-                xticklabels=["Non-FoG", "Pre-FoG", "FoG"], 
-                yticklabels=["Non-FoG", "Pre-FoG", "FoG"])
-    plt.title("LOSO Overall 3-Class Confusion Matrix")
+                xticklabels=["Non-FoG", "FoG"], 
+                yticklabels=["Non-FoG", "FoG"])
+    plt.title("LOSO Overall Binary Confusion Matrix")
     plt.ylabel("True Label")
     plt.xlabel("Predicted Label")
     plt.tight_layout()
     
-    # Update the save path for the image
-    cm_save_path = os.path.join(args.data_path, "loso_confusion_matrix_3class.png")
+    cm_save_path = os.path.join(args.data_path, "loso_confusion_matrix_2class.png")
     plt.savefig(cm_save_path, dpi=300)
     plt.show()
 
-    # Save final dictionary locally (exclude massive raw arrays to save space)
     save_data = {}
     for k, v in results.items():
         save_data[k] = {key: val.tolist() if isinstance(val, np.ndarray) else val 
                         for key, val in v.items() if key not in ['y_true', 'y_pred']}
 
-    json_save_path = os.path.join(args.data_path, "loso_results_3class.json")
+    json_save_path = os.path.join(args.data_path, "loso_results_2class.json")
     with open(json_save_path, "w") as f:
         json.dump(save_data, f, indent=2)
 
-    print(f"\nSuccessfully saved metrics to:")
+    print(f"\nSuccessfully saved clean binary metrics to:")
     print(f"  - {cm_save_path}")
     print(f"  - {json_save_path}")

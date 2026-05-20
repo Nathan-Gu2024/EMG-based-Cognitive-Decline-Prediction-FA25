@@ -75,7 +75,7 @@ class FoGCNNTCN(nn.Module):
     def __init__(self, num_classes=2, dropout_cnn=0.3, dropout_tcn=0.2):
         super().__init__()
         self.stem = nn.Sequential(
-            nn.Conv1d(6, 64, kernel_size=7, padding=3),
+            nn.Conv1d(8, 64, kernel_size=7, padding=3),
             nn.BatchNorm1d(64),
             nn.ReLU()
         )

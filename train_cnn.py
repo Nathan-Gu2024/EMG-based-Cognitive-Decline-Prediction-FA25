@@ -16,6 +16,7 @@ import numpy as np
 import torch
 import argparse
 from torch.utils.data import DataLoader
+from prep import Prep
 
 from FoG_CNN_class import FoG_Class as FC
 from fog_dataset import FoGDataset
@@ -58,8 +59,12 @@ if __name__ == "__main__":
                 print(f"  Skipping — no sensor data in task window")
                 continue
 
+            fused_df = Prep.fuse_imu_data_vectorized(raw_sensor_df)
+            if 'yaw' in fused_df.columns:
+                fused_df = fused_df.drop(columns=['yaw'])
+
             # Step 1: Resample raw acc+gyro to 128 Hz
-            df_128 = FC.resample_imu_d(raw_sensor_df, target_sfreq=128.0)
+            df_128 = FC.resample_imu_d(fused_df, target_sfreq=128.0)
 
             # Step 2: Build signal matrix (converts ADC → physical units internally)
             S = FC.build_S_matrix(df_128)   # (N, 6) in g and deg/s

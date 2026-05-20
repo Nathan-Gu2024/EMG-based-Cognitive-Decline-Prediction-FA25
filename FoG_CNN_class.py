@@ -59,7 +59,7 @@ class FoG_Class:
         GYRO_SENS = 131.0    # LSB/(deg/s) — ±250 dps range, 16-bit
 
         S = df[["acc_x", "acc_y", "acc_z",
-                "gyro_x", "gyro_y", "gyro_z"]].to_numpy(dtype=np.float32)
+                "gyro_x", "gyro_y", "gyro_z", "pitch", "roll"]].to_numpy(dtype=np.float32)
 
         S[:, 0:3] /= ACC_SENS   # acc channels → g
         S[:, 3:6] /= GYRO_SENS  # gyro channels → deg/s

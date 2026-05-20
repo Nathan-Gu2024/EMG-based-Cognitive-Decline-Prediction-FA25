@@ -100,6 +100,43 @@ class Prep:
 
         return aligned
 
+    # Merges raw IMU data + stable orientation tracking channels while discarding yaw drift
+    def merge_all_channels(subject_acc_data, gait_start, run_fusion=True, fusion_method="vectorized"):
+        if not subject_acc_data:
+            raise ValueError("No data provided to merge_all_channels()")
+
+        # Pick reference sensor for time alignment (usually Waist)
+        ref_sensor = "Waist" if "Waist" in subject_acc_data else list(subject_acc_data.keys())[0]
+        ref_time = subject_acc_data[ref_sensor]["t_sec"].values
+        aligned = pd.DataFrame({"t_sec": ref_time})
+
+        # Process and align every sensor location
+        for sensor, df in subject_acc_data.items():
+            df_processed = df.copy()
+            
+            # Run the IMU fusion step per sensor before merging
+            if run_fusion:
+                if fusion_method == "vectorized":
+                    df_processed = Prep.fuse_imu_data_vectorized(df_processed)
+                elif fusion_method == "kalman":
+                    df_processed = Prep.fuse_imu_data_kalman(df_processed)
+
+            # Define features to extract. NOTICE: 'yaw' is intentionally omitted here!
+            target_cols = ["acc_x", "acc_y", "acc_z", "gyro_x", "gyro_y", "gyro_z"]
+            if run_fusion and "pitch" in df_processed.columns and "roll" in df_processed.columns:
+                target_cols += ["pitch", "roll"]
+
+            # Interpolate and rename columns uniquely (e.g., Waist_pitch, LShank_roll)
+            for col in target_cols:
+                aligned[f"{sensor}_{col}"] = np.interp(ref_time, df_processed["t_sec"], df_processed[col])
+
+        # Reconstruct absolute timestamps
+        aligned["timestamp"] = [
+            (gait_start + pd.to_timedelta(t, unit="s")).strftime("%H:%M:%S.%f")[:-3]
+            for t in aligned["t_sec"]
+        ]
+
+        return aligned
     #LShank, RShank, Waist, Arm
     # timestamp, acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z, NC/SC (not important)
     #Sampled at 500Hz => 2ms / sample
@@ -233,9 +270,13 @@ class Prep:
         acc_y = df["acc_y"].to_numpy()
         acc_z = df["acc_z"].to_numpy()
 
-        gyro_x = np.deg2rad(df["gyro_x"].to_numpy())
-        gyro_y = np.deg2rad(df["gyro_y"].to_numpy())
-        gyro_z = np.deg2rad(df["gyro_z"].to_numpy())
+        # Convert raw ADC → deg/s → rad/s
+        # Sensor: ±250 dps range, 16-bit → 131 LSB/(deg/s)
+        GYRO_SENS = 131.0
+        ACC_SENS  = 8192.0  # ±4g range, 16-bit — z-axis at rest ≈ 8000 ADC ≈ 1g
+        gyro_x = np.deg2rad(df["gyro_x"].to_numpy() / GYRO_SENS)
+        gyro_y = np.deg2rad(df["gyro_y"].to_numpy() / GYRO_SENS)
+        gyro_z = np.deg2rad(df["gyro_z"].to_numpy() / GYRO_SENS)
 
         # Improved stationary detection
         acc_magnitude = np.sqrt(acc_x**2 + acc_y**2 + acc_z**2)
@@ -245,9 +286,10 @@ class Prep:
         window_size = 100
         acc_variance = pd.Series(acc_magnitude).rolling(window_size, center=True).std().to_numpy()
         
-        # Stationary when variance is low and magnitude is near 1g (9.81 m/s²)
-        # Assuming your acc data is in G units, adjust threshold if needed
-        stationary = (acc_variance < 0.05) & (np.abs(acc_magnitude - 1.0) < 0.1)
+        # Normalize acc to g units for stationary detection
+        # Raw ADC at rest: z-axis ≈ 8000 ADC ≈ 1g → divide by ACC_SENS
+        acc_magnitude_g = acc_magnitude / ACC_SENS
+        stationary = (acc_variance < (0.05 * ACC_SENS)) & (np.abs(acc_magnitude_g - 1.0) < 0.1)
         
         # If no stationary periods found, use first few seconds
         if not np.any(stationary):
@@ -303,9 +345,13 @@ class Prep:
         acc_y = df["acc_y"].to_numpy()
         acc_z = df["acc_z"].to_numpy()
 
-        gyro_x = np.deg2rad(df["gyro_x"].to_numpy())
-        gyro_y = np.deg2rad(df["gyro_y"].to_numpy())
-        gyro_z = np.deg2rad(df["gyro_z"].to_numpy())
+        # Convert raw ADC → deg/s → rad/s
+        # Sensor: ±250 dps range, 16-bit → 131 LSB/(deg/s)
+        GYRO_SENS = 131.0
+        ACC_SENS  = 8192.0  # ±4g range, 16-bit — z-axis at rest ≈ 8000 ADC ≈ 1g
+        gyro_x = np.deg2rad(df["gyro_x"].to_numpy() / GYRO_SENS)
+        gyro_y = np.deg2rad(df["gyro_y"].to_numpy() / GYRO_SENS)
+        gyro_z = np.deg2rad(df["gyro_z"].to_numpy() / GYRO_SENS)
 
         # Accelerometer angles
         pitch_acc = np.arctan2(-acc_x, np.sqrt(acc_y**2 + acc_z**2))
@@ -377,5 +423,3 @@ class Prep:
         out["yaw"] = np.degrees(yaw_out)
 
         return out
-    
-

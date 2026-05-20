@@ -70,7 +70,7 @@ class FoG_Class:
         """
         N = S.shape[0]
         K = (N - window_len) // step + 1
-        X = np.zeros((K, window_len, 6), dtype=np.float32)
+        X = np.zeros((K, window_len, S.shape[1]), dtype=np.float32)
         for k in range(K):
             s = k * step
             X[k] = S[s:s + window_len]

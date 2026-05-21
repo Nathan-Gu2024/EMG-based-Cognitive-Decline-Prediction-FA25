@@ -113,30 +113,23 @@ if __name__ == "__main__":
     X_combined = np.concatenate(all_X, axis=0)
     y_combined = np.concatenate(all_y, axis=0)
 
-    # ── 1. Apply Robust Subject-Level Scaling with Spike Clipping ──
-    print("\nApplying spike clipping and robust subject-level scaling (Median + IQR)...")
+    # ── 1. Apply Subject-Level Normalization ──
+    print("Applying subject-level Z-score normalization...")
     X_norm = X_combined.copy()
     for subj in subject_indices:
         s, e = subj['start_idx'], subj['end_idx']
-        subj_data = X_combined[s:e].copy()
+        subj_data = X_combined[s:e]
         
-        # FIX: Clip spikes to the 1st and 99th percentiles per channel for this specific subject
-        p1 = np.percentile(subj_data, 1, axis=(0,1), keepdims=True)
-        p99 = np.percentile(subj_data, 99, axis=(0,1), keepdims=True)
-        subj_data = np.clip(subj_data, p1, p99)
+        # Standard deviation naturally scales down extreme FoG peaks without deleting them!
+        mean = subj_data.mean(axis=(0,1), keepdims=True)  
+        std  = subj_data.std(axis=(0,1),  keepdims=True)  
         
-        # FIX: Compute robust scaling parameters on the clipped data
-        median = np.median(subj_data, axis=(0,1), keepdims=True)
-        q25 = np.percentile(subj_data, 25, axis=(0,1), keepdims=True)
-        q75 = np.percentile(subj_data, 75, axis=(0,1), keepdims=True)
-        iqr = q75 - q25
+        # Prevent division by zero
+        std  = np.where(std < 1e-8, 1e-8, std)
         
-        # Prevent division by zero if a sensor channel remains completely flat
-        iqr = np.where(iqr < 1e-8, 1e-8, iqr)
-        
-        # Apply scaling
-        X_norm[s:e] = (subj_data - median) / iqr
+        X_norm[s:e] = (subj_data - mean) / std
 
+        
     # ── 2. Drop Pre-FoG Class (Reverted completely to clean Binary Setup) ──
     print("Dropping Pre-FoG class entirely to preserve clean binary distribution...")
     # y_combined is already beautifully formatted as 0=NonFoG, 1=FoG.

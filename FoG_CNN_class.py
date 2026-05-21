@@ -85,7 +85,7 @@ class FoG_Class:
         return fog_mask
 
     def label_sliding_windows(t_sec, fog_mask, sfreq=128, window_sec=3.0,
-                               overlap_sec=0.75, fog_class=1, nonfog_class=0):
+                               overlap_sec=0.25, fog_class=1, nonfog_class=0):
         """
         Returns y: (K,) — 0=NonFoG, 1=FoG.
         overlap_sec should match the step used in sliding_windows.

@@ -2,11 +2,11 @@
 train_fog_cnn.py
 
 Optimized Binary LOSO CNN/TCN training with:
-- Focal Loss for class imbalance
+- Fixed 0.5 Threshold + Min-Duration Post-Processing
+- Capped Focal Loss weights to prevent double-penalization
 - Automated remapping from 3-class data to clean 2-class binary setup
 - Exclusion of uninformative / poisoning subjects (002 and 005)
 - Early stopping locked onto minority FoG class F1 score
-- Fixed NameError bug on epoch reporting
 """
 
 import os
@@ -40,7 +40,7 @@ class FocalLoss(nn.Module):
             loss = self.alpha[targets] * loss
         return loss.mean()
 
-# ── 2. CNN + TCN Architecture (Reverted to 2-Class Output Head) ──
+# ── 2. CNN + TCN Architecture ──
 class ConvBlock(nn.Module):
     def __init__(self, in_ch, out_ch, kernel=7, dropout=0.3):
         super().__init__()
@@ -143,7 +143,6 @@ def train_epoch(model, loader, criterion, optimizer, scaler, device):
 
     return total_loss / len(loader), 100 * correct / total
 
-
 @torch.no_grad()
 def evaluate(model, loader, device):
     """Returns predictions, labels, AND FoG class probabilities."""
@@ -168,21 +167,6 @@ def apply_threshold(probs, threshold=0.5):
     """Convert FoG probabilities to binary predictions at a given threshold."""
     return (probs >= threshold).astype(int)
 
-
-def majority_vote_smooth(preds, window=5):
-    """
-    Sliding majority vote over consecutive window predictions.
-    Removes isolated FoG blips surrounded by NonFoG.
-    window=5 → covers 5 * 0.75s = 3.75s of temporal context.
-    """
-    smoothed = preds.copy()
-    half = window // 2
-    for i in range(half, len(preds) - half):
-        votes = preds[i - half:i + half + 1]
-        smoothed[i] = 1 if votes.sum() > len(votes) // 2 else 0
-    return smoothed
-
-
 def min_fog_duration_filter(preds, min_windows=3):
     """
     Remove FoG runs shorter than min_windows consecutive predictions.
@@ -206,19 +190,15 @@ def min_fog_duration_filter(preds, min_windows=3):
             i += 1
     return filtered
 
-
-def post_process(probs, threshold=0.5, smooth_window=5, min_windows=3):
+def post_process(probs, threshold=0.5, min_windows=3):
     """
-    Full post-processing pipeline:
-      1. Apply decision threshold
-      2. Majority vote smoothing (removes isolated blips)
-      3. Minimum FoG duration filter (removes short runs)
+    Fixed post-processing pipeline:
+      1. Apply standard 0.5 decision threshold
+      2. Minimum FoG duration filter (removes physically impossible short noise)
     """
     preds = apply_threshold(probs, threshold)
-    preds = majority_vote_smooth(preds, window=smooth_window)
     preds = min_fog_duration_filter(preds, min_windows=min_windows)
     return preds
-
 
 def metrics(y_true, y_pred):
     cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
@@ -242,59 +222,13 @@ def metrics(y_true, y_pred):
     )
 
 
-def threshold_sweep(y_true, probs, thresholds=None, smooth_window=5, min_windows=3, min_specificity=0.75):
-    """
-    Evaluate metrics at multiple thresholds + post-processing.
-    Returns the threshold with the best Youden Index, ensuring a specificity floor.
-    """
-    # Expanded sweep up to 0.85 to give the model room to reign in False Positives
-    if thresholds is None:
-        thresholds = [0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85]
-
-    print(f"\n  Threshold sweep (smooth_window={smooth_window}, min_windows={min_windows}):")
-    print(f"  {'Thresh':>8} {'Sens':>8} {'Spec':>8} {'Youden':>8} {'F1':>8}")
-    print(f"  {'-'*48}")
-
-    best_youden, best_thresh = -1.0, 0.5
-    sweep_results = {}
-
-    for t in thresholds:
-        # Apply the threshold, then temporal smoothing, then min-duration filter
-        preds = post_process(probs, threshold=t,
-                              smooth_window=smooth_window, min_windows=min_windows)
-        m = metrics(y_true, preds)
-        sweep_results[t] = m
-        
-        # 1. Calculate Youden Index (Sensitivity + Specificity - 1)
-        youden = m['sensitivity'] + m['specificity'] - 1.0
-        
-        # 2. Optimization constraint: Beat current best Youden AND meet minimum specificity
-        is_best = False
-        if youden > best_youden and m['specificity'] >= min_specificity:
-            best_youden = youden
-            best_thresh = t
-            is_best = True
-            
-        marker = " ← BEST" if is_best else ""
-        
-        print(f"  {t:>8.2f} {m['sensitivity']*100:>7.1f}% {m['specificity']*100:>7.1f}% "
-              f"{youden:>8.3f} {m['f1']*100:>7.1f}%{marker}")
-
-    # Fallback if the network is struggling to hit the specificity floor
-    if best_youden == -1.0:
-        print(f"  [Warning] No threshold met min_specificity={min_specificity*100:.1f}%. Defaulting to threshold 0.5")
-        best_thresh = 0.5
-
-    print(f"  Best threshold: {best_thresh:.2f}  (Youden={best_youden:.3f})")
-    return best_thresh, sweep_results
-
 # ── LOSO Cross-Validation ─────────────────────────────────────────────────────
 
 def loso_cv(X, y, subject_indices,
             num_classes=2, epochs=80, batch_size=256,
             lr=1e-3, device='cuda', patience=12):
 
-    # Transpose once here: (N, 384, 6) → (N, 6, 384)
+    # Transpose once here: (N, 384, 8) → (N, 8, 384)
     X_t = torch.tensor(X, dtype=torch.float32).transpose(1, 2)
     y_t = torch.tensor(y, dtype=torch.long)
 
@@ -347,10 +281,13 @@ def loso_cv(X, y, subject_indices,
 
         model = FoGCNNTCN(num_classes=2).to(device)
         
-        # Calculate dynamic balance weights for Binary Focus
+        # FIX: Calculate weights and heavily cap them to prevent double-penalizing the majority class
         class_counts = np.bincount(train_labels)
         weights = 1.0 / class_counts
         weights = weights / weights.sum() 
+        # Cap the max ratio weight (no single class gets > 0.7 weight penalty)
+        weights = np.clip(weights, a_min=0.3, a_max=0.7)
+        weights = weights / weights.sum()
         
         criterion = FocalLoss(alpha=weights, gamma=2.0).to(device)
         optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
@@ -361,10 +298,10 @@ def loso_cv(X, y, subject_indices,
 
         for epoch in range(epochs):
             tr_loss, tr_acc = train_epoch(model, train_loader, criterion, optimizer, scaler, device)
-            val_preds, val_lbls, val_probs = evaluate(model, val_loader, device)
-            # Use post-processed val predictions for early stopping — prevents
-            # optimising for raw predictions that will be smoothed away anyway
-            val_preds_pp = post_process(val_probs, threshold=0.5, smooth_window=5, min_windows=3)
+            val_preds_raw, val_lbls, val_probs = evaluate(model, val_loader, device)
+            
+            # Evaluate validation against the fixed 0.5 post-processing pipeline
+            val_preds_pp = post_process(val_probs, threshold=0.5, min_windows=3)
             vm = metrics(val_lbls, val_preds_pp)
             val_f1 = vm['f1']
 
@@ -387,23 +324,18 @@ def loso_cv(X, y, subject_indices,
         if best_state is not None:
             model.load_state_dict(best_state)
 
-        # Evaluate on test set — collect probabilities for threshold sweep
+        # Evaluate on test set
         y_pred_raw, y_true, y_probs = evaluate(model, test_loader, device)
 
-        # Threshold sweep: find best threshold + post-processing for this fold
-        best_thresh, sweep = threshold_sweep(
-            y_true, y_probs, smooth_window=5, min_windows=3
-        )
-
-        # Final predictions at best threshold with full post-processing
-        y_pred_best = post_process(y_probs, threshold=best_thresh, smooth_window=5, min_windows=3)
+        # Final predictions at fixed 0.5 threshold with min-duration filter
+        y_pred_best = post_process(y_probs, threshold=0.5, min_windows=3)
         m_raw  = metrics(y_true, y_pred_raw)
         m_best = metrics(y_true, y_pred_best)
 
         results[test_subj] = {
             'raw':        m_raw,
             'best':       m_best,
-            'best_thresh': best_thresh
+            'best_thresh': 0.5
         }
         all_preds.extend(y_pred_best)
         all_labels.extend(y_true)
@@ -411,7 +343,7 @@ def loso_cv(X, y, subject_indices,
         print(f"\n  → Test {test_subj}  [raw]  "
               f"F1={m_raw['f1']*100:.1f}% Sens={m_raw['sensitivity']*100:.1f}% Spec={m_raw['specificity']*100:.1f}%")
         print(f"  → Test {test_subj}  [best] "
-              f"F1={m_best['f1']*100:.1f}% Sens={m_best['sensitivity']*100:.1f}% Spec={m_best['specificity']*100:.1f}%  (thresh={best_thresh:.2f})")
+              f"F1={m_best['f1']*100:.1f}% Sens={m_best['sensitivity']*100:.1f}% Spec={m_best['specificity']*100:.1f}%  (fixed thresh=0.50)")
         
     overall = metrics(np.array(all_labels), np.array(all_preds))
     results['overall'] = overall
@@ -436,16 +368,13 @@ if __name__ == "__main__":
     
     print(f"Original Loaded X: {X.shape}  y: {y.shape}")
     
-    # FIX 1 & 4: Automatically collapse 3-class matrix back into 2-class binary setup
-    # If arrays were stored as (0=NonFoG, 1=PreFoG, 2=FoG), map 2 -> 1, and 1 -> 0
     if len(np.unique(y)) > 2:
         print("Remapping 3-class arrays back to Binary setup...")
         y_binary = np.zeros_like(y)
-        y_binary[y == 2] = 1  # Freeze maps to Class 1
-        y_binary[y == 1] = 0  # Pre-freeze is absorbed back into Non-Freeze Background
+        y_binary[y == 2] = 1  
+        y_binary[y == 1] = 0  
         y = y_binary
 
-    # FIX 3: Remove poisonous subjects that collapse network balance entirely
     EXCLUDE_SUBJS = ["002", "005"]
     print(f"Filtering out background noise/poisonous subjects: {EXCLUDE_SUBJS}")
     subject_indices = [s for s in subject_indices if s["subject_id"] not in EXCLUDE_SUBJS]
@@ -465,29 +394,16 @@ if __name__ == "__main__":
     )
 
     print("\n" + "="*70)
-    print("OVERALL LOSO RESULTS (post-processed predictions)")
+    print("OVERALL BINARY 2-CLASS LOSO RESULTS")
     print("="*70)
-
+    
     ov = results['overall']
-    print(f"  Sensitivity : {ov['sensitivity']*100:.2f}%")
-    print(f"  Specificity : {ov['specificity']*100:.2f}%")
-    print(f"  Precision   : {ov['precision']*100:.2f}%")
-    print(f"  FoG F1      : {ov['f1']*100:.2f}%")
-    print(f"  Accuracy    : {ov['accuracy']*100:.2f}%")
-    print(f"  TP={ov['tp']}  FP={ov['fp']}  FN={ov['fn']}  TN={ov['tn']}")
-
-    # Per-subject threshold summary
-    print("\n  Per-subject best thresholds:")
-    print(f"  {'Subject':>10} {'Thresh':>8} {'Sens':>8} {'Spec':>8} {'F1':>8}")
-    print(f"  {'-'*46}")
-    for subj_id in [s['subject_id'] for s in subject_indices]:
-        if subj_id in results and 'best' in results[subj_id]:
-            mb = results[subj_id]['best']
-            t  = results[subj_id]['best_thresh']
-            print(f"  {subj_id:>10} {t:>8.2f} "
-                  f"{mb['sensitivity']*100:>7.1f}% "
-                  f"{mb['specificity']*100:>7.1f}% "
-                  f"{mb['f1']*100:>7.1f}%")
+    all_y_true = ov['y_true']
+    all_y_pred = ov['y_pred']
+    
+    print(classification_report(all_y_true, all_y_pred, 
+                                target_names=["Non-FoG", "FoG"], 
+                                digits=4, zero_division=0))
 
     # Confusion matrix
     plt.figure(figsize=(6, 5))
@@ -502,7 +418,7 @@ if __name__ == "__main__":
     plt.savefig(cm_save_path, dpi=300)
     plt.show()
 
-    # Save results
+    # Save results safely
     def serialise(v):
         if isinstance(v, np.ndarray): return v.tolist()
         if isinstance(v, (np.integer, np.floating)): return float(v)
@@ -526,5 +442,4 @@ if __name__ == "__main__":
     with open(json_save_path, "w") as f:
         json.dump(save_data, f, indent=2)
 
-    print(f"\nSaved: {cm_save_path}")
-    print(f"Saved: {json_save_path}")
+    print(f"\nSuccessfully saved metrics to: {json_save_path}")

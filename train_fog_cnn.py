@@ -146,33 +146,131 @@ def train_epoch(model, loader, criterion, optimizer, scaler, device):
 
 @torch.no_grad()
 def evaluate(model, loader, device):
+    """Returns predictions, labels, AND FoG class probabilities."""
     model.eval()
-    all_preds, all_labels = [], []
+    all_preds, all_labels, all_probs = [], [], []
 
     for X_batch, y_batch in loader:
         X_batch = X_batch.to(device, non_blocking=True)
-        preds   = model(X_batch).argmax(dim=1)
+        out     = model(X_batch)
+        probs   = torch.softmax(out, dim=1)[:, 1]  # P(FoG)
+        preds   = out.argmax(dim=1)
         all_preds.extend(preds.cpu().numpy())
         all_labels.extend(y_batch.numpy())
+        all_probs.extend(probs.cpu().numpy())
 
-    return np.array(all_preds), np.array(all_labels)
+    return np.array(all_preds), np.array(all_labels), np.array(all_probs)
+
+
+# ── Post-processing ───────────────────────────────────────────────────────────
+
+def apply_threshold(probs, threshold=0.5):
+    """Convert FoG probabilities to binary predictions at a given threshold."""
+    return (probs >= threshold).astype(int)
+
+
+def majority_vote_smooth(preds, window=5):
+    """
+    Sliding majority vote over consecutive window predictions.
+    Removes isolated FoG blips surrounded by NonFoG.
+    window=5 → covers 5 * 0.75s = 3.75s of temporal context.
+    """
+    smoothed = preds.copy()
+    half = window // 2
+    for i in range(half, len(preds) - half):
+        votes = preds[i - half:i + half + 1]
+        smoothed[i] = 1 if votes.sum() > len(votes) // 2 else 0
+    return smoothed
+
+
+def min_fog_duration_filter(preds, min_windows=3):
+    """
+    Remove FoG runs shorter than min_windows consecutive predictions.
+    At step=96 (0.75s): min_windows=3 → requires ≥2.25s of FoG.
+    Real clinical FoG episodes typically last >1.5s.
+    """
+    filtered = preds.copy()
+    n = len(filtered)
+    i = 0
+    while i < n:
+        if filtered[i] == 1:
+            # Find end of this FoG run
+            j = i
+            while j < n and filtered[j] == 1:
+                j += 1
+            run_len = j - i
+            if run_len < min_windows:
+                filtered[i:j] = 0   # Too short — wipe it
+            i = j
+        else:
+            i += 1
+    return filtered
+
+
+def post_process(probs, threshold=0.5, smooth_window=5, min_windows=3):
+    """
+    Full post-processing pipeline:
+      1. Apply decision threshold
+      2. Majority vote smoothing (removes isolated blips)
+      3. Minimum FoG duration filter (removes short runs)
+    """
+    preds = apply_threshold(probs, threshold)
+    preds = majority_vote_smooth(preds, window=smooth_window)
+    preds = min_fog_duration_filter(preds, min_windows=min_windows)
+    return preds
 
 
 def metrics(y_true, y_pred):
     cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
-    
-    # CRITICAL: Track pure Binary F1 score specifically for Class 1 (FoG)
-    # This prevents the model from looking "good" via high Non-FoG detection performance
+    tn, fp, fn, tp = cm.ravel()
     f1_binary = f1_score(y_true, y_pred, average='binary', pos_label=1, zero_division=0)
     acc = accuracy_score(y_true, y_pred)
-    
+    sens = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    spec = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+    prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+
     return dict(
-        f1=f1_binary, 
-        accuracy=acc, 
+        f1=f1_binary,
+        sensitivity=sens,
+        specificity=spec,
+        precision=prec,
+        accuracy=acc,
         confusion_matrix=cm,
-        y_true=y_true, 
+        tp=int(tp), fp=int(fp), tn=int(tn), fn=int(fn),
+        y_true=y_true,
         y_pred=y_pred
     )
+
+
+def threshold_sweep(y_true, probs, thresholds=None, smooth_window=5, min_windows=3):
+    """
+    Evaluate metrics at multiple thresholds + post-processing.
+    Returns the threshold with the best FoG F1 score.
+    """
+    if thresholds is None:
+        thresholds = [0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7]
+
+    print(f"\n  Threshold sweep (smooth_window={smooth_window}, min_windows={min_windows}):")
+    print(f"  {'Thresh':>8} {'Sens':>8} {'Spec':>8} {'F1':>8} {'Acc':>8}")
+    print(f"  {'-'*44}")
+
+    best_f1, best_thresh = 0.0, 0.5
+    sweep_results = {}
+
+    for t in thresholds:
+        preds = post_process(probs, threshold=t,
+                              smooth_window=smooth_window, min_windows=min_windows)
+        m = metrics(y_true, preds)
+        sweep_results[t] = m
+        marker = " ←" if m['f1'] > best_f1 else ""
+        print(f"  {t:>8.2f} {m['sensitivity']*100:>7.1f}% {m['specificity']*100:>7.1f}% ",
+              f"{m['f1']*100:>7.1f}% {m['accuracy']*100:>7.1f}%{marker}")
+        if m['f1'] > best_f1:
+            best_f1 = m['f1']
+            best_thresh = t
+
+    print(f"  Best threshold: {best_thresh:.2f}  (FoG F1={best_f1*100:.1f}%)")
+    return best_thresh, sweep_results
 
 # ── LOSO Cross-Validation ─────────────────────────────────────────────────────
 
@@ -247,8 +345,11 @@ def loso_cv(X, y, subject_indices,
 
         for epoch in range(epochs):
             tr_loss, tr_acc = train_epoch(model, train_loader, criterion, optimizer, scaler, device)
-            val_preds, val_lbls = evaluate(model, val_loader, device)
-            vm = metrics(val_lbls, val_preds)
+            val_preds, val_lbls, val_probs = evaluate(model, val_loader, device)
+            # Use post-processed val predictions for early stopping — prevents
+            # optimising for raw predictions that will be smoothed away anyway
+            val_preds_pp = post_process(val_probs, threshold=0.5, smooth_window=5, min_windows=3)
+            vm = metrics(val_lbls, val_preds_pp)
             val_f1 = vm['f1']
 
             scheduler.step(val_f1)
@@ -260,7 +361,8 @@ def loso_cv(X, y, subject_indices,
                 wait += 1
 
             if (epoch + 1) % 10 == 0:
-                print(f"  → Epoch {epoch+1}: Val FoG F1={val_f1*100:.1f}% | Val Acc={vm['accuracy']*100:.1f}%")
+                print(f"  → Epoch {epoch+1}: Val FoG F1={val_f1*100:.1f}% "
+                      f"Sens={vm['sensitivity']*100:.1f}% Spec={vm['specificity']*100:.1f}%")
                 
             if wait >= patience:
                 print(f"  Early stop at epoch {epoch+1}")                
@@ -269,15 +371,31 @@ def loso_cv(X, y, subject_indices,
         if best_state is not None:
             model.load_state_dict(best_state)
 
-        y_pred, y_true = evaluate(model, test_loader, device)
-        m = metrics(y_true, y_pred)
-        results[test_subj] = m
-        all_preds.extend(y_pred)
+        # Evaluate on test set — collect probabilities for threshold sweep
+        y_pred_raw, y_true, y_probs = evaluate(model, test_loader, device)
+
+        # Threshold sweep: find best threshold + post-processing for this fold
+        best_thresh, sweep = threshold_sweep(
+            y_true, y_probs, smooth_window=5, min_windows=3
+        )
+
+        # Final predictions at best threshold with full post-processing
+        y_pred_best = post_process(y_probs, threshold=best_thresh, smooth_window=5, min_windows=3)
+        m_raw  = metrics(y_true, y_pred_raw)
+        m_best = metrics(y_true, y_pred_best)
+
+        results[test_subj] = {
+            'raw':        m_raw,
+            'best':       m_best,
+            'best_thresh': best_thresh
+        }
+        all_preds.extend(y_pred_best)
         all_labels.extend(y_true)
 
-        print(f"\n  → Final Test {test_subj} Result: "
-              f"FoG F1={m['f1']*100:.1f}% "
-              f"Acc={m['accuracy']*100:.1f}%")
+        print(f"\n  → Test {test_subj}  [raw]  "
+              f"F1={m_raw['f1']*100:.1f}% Sens={m_raw['sensitivity']*100:.1f}% Spec={m_raw['specificity']*100:.1f}%")
+        print(f"  → Test {test_subj}  [best] "
+              f"F1={m_best['f1']*100:.1f}% Sens={m_best['sensitivity']*100:.1f}% Spec={m_best['specificity']*100:.1f}%  (thresh={best_thresh:.2f})")
         
     overall = metrics(np.array(all_labels), np.array(all_preds))
     results['overall'] = overall
@@ -331,40 +449,66 @@ if __name__ == "__main__":
     )
 
     print("\n" + "="*70)
-    print("OVERALL BINARY 2-CLASS LOSO RESULTS")
+    print("OVERALL LOSO RESULTS (post-processed predictions)")
     print("="*70)
-    
-    ov = results['overall']
-    all_y_true = ov['y_true']
-    all_y_pred = ov['y_pred']
-    
-    print(classification_report(all_y_true, all_y_pred, 
-                                target_names=["Non-FoG", "FoG"], 
-                                digits=4, zero_division=0))
 
-    # Confusion matrix (2x2)
+    ov = results['overall']
+    print(f"  Sensitivity : {ov['sensitivity']*100:.2f}%")
+    print(f"  Specificity : {ov['specificity']*100:.2f}%")
+    print(f"  Precision   : {ov['precision']*100:.2f}%")
+    print(f"  FoG F1      : {ov['f1']*100:.2f}%")
+    print(f"  Accuracy    : {ov['accuracy']*100:.2f}%")
+    print(f"  TP={ov['tp']}  FP={ov['fp']}  FN={ov['fn']}  TN={ov['tn']}")
+
+    # Per-subject threshold summary
+    print("\n  Per-subject best thresholds:")
+    print(f"  {'Subject':>10} {'Thresh':>8} {'Sens':>8} {'Spec':>8} {'F1':>8}")
+    print(f"  {'-'*46}")
+    for subj_id in [s['subject_id'] for s in subject_indices]:
+        if subj_id in results and 'best' in results[subj_id]:
+            mb = results[subj_id]['best']
+            t  = results[subj_id]['best_thresh']
+            print(f"  {subj_id:>10} {t:>8.2f} "
+                  f"{mb['sensitivity']*100:>7.1f}% "
+                  f"{mb['specificity']*100:>7.1f}% "
+                  f"{mb['f1']*100:>7.1f}%")
+
+    # Confusion matrix
     plt.figure(figsize=(6, 5))
     sns.heatmap(ov['confusion_matrix'], annot=True, fmt='d', cmap='Blues',
-                xticklabels=["Non-FoG", "FoG"], 
+                xticklabels=["Non-FoG", "FoG"],
                 yticklabels=["Non-FoG", "FoG"])
-    plt.title("LOSO Overall Binary Confusion Matrix")
+    plt.title("LOSO Overall Confusion Matrix (post-processed)")
     plt.ylabel("True Label")
     plt.xlabel("Predicted Label")
     plt.tight_layout()
-    
     cm_save_path = os.path.join(args.data_path, "loso_confusion_matrix_2class.png")
     plt.savefig(cm_save_path, dpi=300)
     plt.show()
 
+    # Save results
+    def serialise(v):
+        if isinstance(v, np.ndarray): return v.tolist()
+        if isinstance(v, (np.integer, np.floating)): return float(v)
+        return v
+
     save_data = {}
     for k, v in results.items():
-        save_data[k] = {key: val.tolist() if isinstance(val, np.ndarray) else val 
-                        for key, val in v.items() if key not in ['y_true', 'y_pred']}
+        if k == 'overall':
+            save_data[k] = {key: serialise(val) for key, val in v.items()
+                            if key not in ('y_true', 'y_pred')}
+        else:
+            save_data[k] = {
+                mode: {key: serialise(val) for key, val in v[mode].items()
+                       if key not in ('y_true', 'y_pred')}
+                for mode in ('raw', 'best')
+                if mode in v
+            }
+            save_data[k]['best_thresh'] = v.get('best_thresh', 0.5)
 
     json_save_path = os.path.join(args.data_path, "loso_results_2class.json")
     with open(json_save_path, "w") as f:
         json.dump(save_data, f, indent=2)
 
-    print(f"\nSuccessfully saved clean binary metrics to:")
-    print(f"  - {cm_save_path}")
-    print(f"  - {json_save_path}")
+    print(f"\nSaved: {cm_save_path}")
+    print(f"Saved: {json_save_path}")

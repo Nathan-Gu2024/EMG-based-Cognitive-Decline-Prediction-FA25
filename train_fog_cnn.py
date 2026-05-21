@@ -242,34 +242,50 @@ def metrics(y_true, y_pred):
     )
 
 
-def threshold_sweep(y_true, probs, thresholds=None, smooth_window=5, min_windows=3):
+def threshold_sweep(y_true, probs, thresholds=None, smooth_window=5, min_windows=3, min_specificity=0.75):
     """
     Evaluate metrics at multiple thresholds + post-processing.
-    Returns the threshold with the best FoG F1 score.
+    Returns the threshold with the best Youden Index, ensuring a specificity floor.
     """
+    # Expanded sweep up to 0.85 to give the model room to reign in False Positives
     if thresholds is None:
-        thresholds = [0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7]
+        thresholds = [0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85]
 
     print(f"\n  Threshold sweep (smooth_window={smooth_window}, min_windows={min_windows}):")
-    print(f"  {'Thresh':>8} {'Sens':>8} {'Spec':>8} {'F1':>8} {'Acc':>8}")
-    print(f"  {'-'*44}")
+    print(f"  {'Thresh':>8} {'Sens':>8} {'Spec':>8} {'Youden':>8} {'F1':>8}")
+    print(f"  {'-'*48}")
 
-    best_f1, best_thresh = 0.0, 0.5
+    best_youden, best_thresh = -1.0, 0.5
     sweep_results = {}
 
     for t in thresholds:
+        # Apply the threshold, then temporal smoothing, then min-duration filter
         preds = post_process(probs, threshold=t,
                               smooth_window=smooth_window, min_windows=min_windows)
         m = metrics(y_true, preds)
         sweep_results[t] = m
-        marker = " ←" if m['f1'] > best_f1 else ""
-        print(f"  {t:>8.2f} {m['sensitivity']*100:>7.1f}% {m['specificity']*100:>7.1f}% ",
-              f"{m['f1']*100:>7.1f}% {m['accuracy']*100:>7.1f}%{marker}")
-        if m['f1'] > best_f1:
-            best_f1 = m['f1']
+        
+        # 1. Calculate Youden Index (Sensitivity + Specificity - 1)
+        youden = m['sensitivity'] + m['specificity'] - 1.0
+        
+        # 2. Optimization constraint: Beat current best Youden AND meet minimum specificity
+        is_best = False
+        if youden > best_youden and m['specificity'] >= min_specificity:
+            best_youden = youden
             best_thresh = t
+            is_best = True
+            
+        marker = " ← BEST" if is_best else ""
+        
+        print(f"  {t:>8.2f} {m['sensitivity']*100:>7.1f}% {m['specificity']*100:>7.1f}% "
+              f"{youden:>8.3f} {m['f1']*100:>7.1f}%{marker}")
 
-    print(f"  Best threshold: {best_thresh:.2f}  (FoG F1={best_f1*100:.1f}%)")
+    # Fallback if the network is struggling to hit the specificity floor
+    if best_youden == -1.0:
+        print(f"  [Warning] No threshold met min_specificity={min_specificity*100:.1f}%. Defaulting to threshold 0.5")
+        best_thresh = 0.5
+
+    print(f"  Best threshold: {best_thresh:.2f}  (Youden={best_youden:.3f})")
     return best_thresh, sweep_results
 
 # ── LOSO Cross-Validation ─────────────────────────────────────────────────────

@@ -282,14 +282,7 @@ def loso_cv(X, y, subject_indices,
         model = FoGCNNTCN(num_classes=2).to(device)
         
         # FIX: Calculate weights and heavily cap them to prevent double-penalizing the majority class
-        class_counts = np.bincount(train_labels)
-        weights = 1.0 / class_counts
-        weights = weights / weights.sum() 
-        # Cap the max ratio weight (no single class gets > 0.7 weight penalty)
-        weights = np.clip(weights, a_min=0.3, a_max=0.7)
-        weights = weights / weights.sum()
-        
-        criterion = FocalLoss(alpha=weights, gamma=2.0).to(device)
+        criterion = FocalLoss(alpha=None, gamma=2.0)
         optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, mode='max', factor=0.5, patience=4, min_lr=1e-5)

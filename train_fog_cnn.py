@@ -287,10 +287,11 @@ def loso_cv(X, y, subject_indices,
         X_tr = torch.tensor(X_tr_np, dtype=torch.float32).transpose(1, 2)
         y_tr = torch.tensor(y_tr_np, dtype=torch.long)
 
-        # Then use X_tr, y_tr in TensorDataset instead of X_t[train_idx], y_t[train_idx]
-        train_loader = DataLoader(TensorDataset(X_t[train_idx], y_t[train_idx]),
+        # FIX 1: Feed the balanced X_tr and y_tr into the DataLoader!
+        train_loader = DataLoader(TensorDataset(X_tr, y_tr),
                                   batch_size=batch_size, shuffle=True,
                                   num_workers=nw, pin_memory=pin, persistent_workers=nw>0)
+                                  
         val_loader   = DataLoader(TensorDataset(X_t[val_idx],   y_t[val_idx]),
                                   batch_size=batch_size*2, shuffle=False,
                                   num_workers=nw, pin_memory=pin, persistent_workers=nw>0)
@@ -300,8 +301,9 @@ def loso_cv(X, y, subject_indices,
 
         model = FoGCNNTCN(num_classes=2).to(device)
         
-        # FIX: Calculate weights and heavily cap them to prevent double-penalizing the majority class
-        criterion = FocalLoss(alpha=[0.4, 0.6], gamma=1.5)
+        # FIX 2: Move the FocalLoss criterion and its alpha weights to the GPU
+        criterion = FocalLoss(alpha=[0.4, 0.6], gamma=1.5).to(device)
+        
         optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, mode='max', factor=0.5, patience=4, min_lr=1e-5)

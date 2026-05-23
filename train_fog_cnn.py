@@ -90,11 +90,7 @@ class FoGCNNTCN(nn.Module):
             TCNBlock(128, kernel=3, dilation=1,  dropout=dropout_tcn),
             TCNBlock(128, kernel=3, dilation=2,  dropout=dropout_tcn),
             TCNBlock(128, kernel=3, dilation=4,  dropout=dropout_tcn),
-            
-            # ── REMOVED dilation=8 BLOCK ──
-            # TCNBlock(128, kernel=3, dilation=8,  dropout=dropout_tcn),
-            # This tightens the receptive field to ~0.87 seconds, perfectly
-            # isolating the 3-8 Hz FoG tremors without blurring the sequence.
+            TCNBlock(128, kernel=3, dilation=8,  dropout=dropout_tcn),
         )
         self.gap  = nn.AdaptiveAvgPool1d(1)
         self.head = nn.Sequential(
@@ -103,7 +99,7 @@ class FoGCNNTCN(nn.Module):
             nn.Dropout(0.4),
             nn.Linear(64, num_classes)
         )
-        
+
     def forward(self, x):
         x = self.stem(x)
         x = self.conv_blocks(x)
@@ -273,6 +269,25 @@ def loso_cv(X, y, subject_indices,
         nw = min(4, os.cpu_count() or 1)
         pin = device == 'cuda'
 
+        # After computing train_idx, before creating train_loader:
+        X_tr_np = X[train_idx]
+        y_tr_np = y[train_idx]
+
+        # Oversample FoG to 1:1 ratio
+        fog_idx    = np.where(y_tr_np == 1)[0]
+        nonfog_idx = np.where(y_tr_np == 0)[0]
+        needed     = len(nonfog_idx) - len(fog_idx)
+        if needed > 0:
+            extra = np.random.choice(fog_idx, needed, replace=True)
+            X_tr_np = np.concatenate([X_tr_np, X_tr_np[extra]])
+            y_tr_np = np.concatenate([y_tr_np, y_tr_np[extra]])
+            perm    = np.random.permutation(len(y_tr_np))
+            X_tr_np, y_tr_np = X_tr_np[perm], y_tr_np[perm]
+
+        X_tr = torch.tensor(X_tr_np, dtype=torch.float32).transpose(1, 2)
+        y_tr = torch.tensor(y_tr_np, dtype=torch.long)
+
+        # Then use X_tr, y_tr in TensorDataset instead of X_t[train_idx], y_t[train_idx]
         train_loader = DataLoader(TensorDataset(X_t[train_idx], y_t[train_idx]),
                                   batch_size=batch_size, shuffle=True,
                                   num_workers=nw, pin_memory=pin, persistent_workers=nw>0)
@@ -286,7 +301,7 @@ def loso_cv(X, y, subject_indices,
         model = FoGCNNTCN(num_classes=2).to(device)
         
         # FIX: Calculate weights and heavily cap them to prevent double-penalizing the majority class
-        criterion = FocalLoss(alpha=None, gamma=2.0)
+        criterion = FocalLoss(alpha=[0.4, 0.6], gamma=1.5)
         optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, mode='max', factor=0.5, patience=4, min_lr=1e-5)

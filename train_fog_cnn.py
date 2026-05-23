@@ -90,7 +90,11 @@ class FoGCNNTCN(nn.Module):
             TCNBlock(128, kernel=3, dilation=1,  dropout=dropout_tcn),
             TCNBlock(128, kernel=3, dilation=2,  dropout=dropout_tcn),
             TCNBlock(128, kernel=3, dilation=4,  dropout=dropout_tcn),
-            TCNBlock(128, kernel=3, dilation=8,  dropout=dropout_tcn),
+            
+            # ── REMOVED dilation=8 BLOCK ──
+            # TCNBlock(128, kernel=3, dilation=8,  dropout=dropout_tcn),
+            # This tightens the receptive field to ~0.87 seconds, perfectly
+            # isolating the 3-8 Hz FoG tremors without blurring the sequence.
         )
         self.gap  = nn.AdaptiveAvgPool1d(1)
         self.head = nn.Sequential(
@@ -99,7 +103,7 @@ class FoGCNNTCN(nn.Module):
             nn.Dropout(0.4),
             nn.Linear(64, num_classes)
         )
-
+        
     def forward(self, x):
         x = self.stem(x)
         x = self.conv_blocks(x)

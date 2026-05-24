@@ -37,7 +37,8 @@ class FocalLoss(nn.Module):
         pt = torch.exp(-ce)
         loss = (1 - pt) ** self.gamma * ce
         if self.alpha is not None:
-            loss = self.alpha[targets] * loss
+            alpha_device = self.alpha.to(targets.device)
+            loss = alpha_device[targets] * loss
         return loss.mean()
 
 # ── 2. CNN + TCN Architecture ──

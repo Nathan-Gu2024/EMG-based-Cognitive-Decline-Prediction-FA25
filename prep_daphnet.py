@@ -11,7 +11,9 @@ import numpy as np
 import pandas as pd
 import argparse
 
-def process_daphnet(raw_dir, save_dir, window_sec=2.0, overlap_sec=0.25, sfreq=64):
+def process_daphnet(raw_dir, save_dir, window_sec=3.0, overlap_sec=0.75, sfreq=64):
+    W_l = int(window_sec * sfreq)   # 192 samples
+    step = int(overlap_sec * sfreq) # 48 samples
     print(f"\nLooking for Daphnet files in: {raw_dir}")
     txt_files = sorted(glob.glob(os.path.join(raw_dir, "*.txt")))
     
@@ -20,10 +22,7 @@ def process_daphnet(raw_dir, save_dir, window_sec=2.0, overlap_sec=0.25, sfreq=6
         return
 
     print(f"Found {len(txt_files)} files. Processing...\n")
-    
-    W_l = int(window_sec * sfreq)       # 128 samples at 64Hz
-    step = int(overlap_sec * sfreq)     # 16 samples
-    
+        
     all_X = []
     all_y = []
     subject_indices = []

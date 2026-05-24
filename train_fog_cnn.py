@@ -301,7 +301,10 @@ def loso_cv(X, y, subject_indices,
         model = FoGCNNTCN(num_classes=2).to(device)
         
         # FIX 2: Move the FocalLoss criterion and its alpha weights to the GPU
-        criterion = FocalLoss(alpha=[0.4, 0.6], gamma=1.5).to(device)
+        class_counts = np.bincount(train_labels)
+        weights = 1.0 / class_counts
+        weights = weights / weights.sum()
+        criterion = FocalLoss(alpha=weights, gamma=2.0)
         
         optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -388,7 +391,10 @@ if __name__ == "__main__":
         y_binary[y == 1] = 0  
         y = y_binary
 
-    EXCLUDE_SUBJS = ["002", "005"]
+    # EXCLUDE_SUBJS = ["002", "005"] #original
+
+    EXCLUDE_SUBJS = ["S04", "S10"]  # zero FoG events for daphnet
+
     print(f"Filtering out background noise/poisonous subjects: {EXCLUDE_SUBJS}")
     subject_indices = [s for s in subject_indices if s["subject_id"] not in EXCLUDE_SUBJS]
 

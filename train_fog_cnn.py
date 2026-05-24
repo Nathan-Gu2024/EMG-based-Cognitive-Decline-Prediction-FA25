@@ -75,7 +75,7 @@ class FoGCNNTCN(nn.Module):
     def __init__(self, num_classes=2, dropout_cnn=0.3, dropout_tcn=0.2):
         super().__init__()
         self.stem = nn.Sequential(
-            nn.Conv1d(8, 64, kernel_size=7, padding=3),
+            nn.Conv1d(9, 64, kernel_size=7, padding=3), #8 for original, 9 for daph
             nn.BatchNorm1d(64),
             nn.ReLU()
         )
@@ -287,7 +287,6 @@ def loso_cv(X, y, subject_indices,
         X_tr = torch.tensor(X_tr_np, dtype=torch.float32).transpose(1, 2)
         y_tr = torch.tensor(y_tr_np, dtype=torch.long)
 
-        # FIX 1: Feed the balanced X_tr and y_tr into the DataLoader!
         train_loader = DataLoader(TensorDataset(X_tr, y_tr),
                                   batch_size=batch_size, shuffle=True,
                                   num_workers=nw, pin_memory=pin, persistent_workers=nw>0)
